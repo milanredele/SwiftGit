@@ -3,17 +3,17 @@
 #
 # It only ever does one of these fixed actions, requested by writing
 # "<id> <action>" into .dev/request:
-#   build    – swift build (debug) + bundle build/GitUI.app
-#   run      – build, then (re)launch build/GitUI.app
+#   build    – swift build (debug) + bundle build/SwiftGit.app
+#   run      – build, then (re)launch build/SwiftGit.app
 #   release  – release build + bundle + relaunch
 #   test     – swift test (headless: offscreen windows, snapshots in .dev/snapshots)
-#   measure  – memory footprint of the running GitUI into .dev/footprint.log
+#   measure  – memory footprint of the running SwiftGit into .dev/footprint.log
 #   commit   – git add -A && git commit -F .dev/commit-msg (your git identity)
 # Output goes to .dev/*.log and .dev/done gets "<id> <exit-code>".
 # Stop it any time with Ctrl-C.
 cd "$(dirname "$0")/.."
 mkdir -p .dev
-echo "GitUI dev loop watching $(pwd)/.dev/request — Ctrl-C to stop."
+echo "SwiftGit dev loop watching $(pwd)/.dev/request — Ctrl-C to stop."
 { sw_vers; echo; swift --version; echo; xcode-select -p; } > .dev/toolchain.log 2>&1
 
 while true; do
@@ -29,15 +29,15 @@ while true; do
             run)
                 scripts/build-app.sh debug > .dev/build.log 2>&1 || CODE=$?
                 if [ $CODE -eq 0 ]; then
-                    pkill -x GitUI 2>/dev/null; sleep 0.5
-                    open build/GitUI.app
+                    pkill -x SwiftGit 2>/dev/null; sleep 0.5
+                    open build/SwiftGit.app
                 fi
                 ;;
             release)
                 scripts/build-app.sh release > .dev/build.log 2>&1 || CODE=$?
                 if [ $CODE -eq 0 ]; then
-                    pkill -x GitUI 2>/dev/null; sleep 0.5
-                    open build/GitUI.app
+                    pkill -x SwiftGit 2>/dev/null; sleep 0.5
+                    open build/SwiftGit.app
                 fi
                 ;;
             test)
@@ -46,12 +46,12 @@ while true; do
                 swift test > .dev/test.log 2>&1 || CODE=$?
                 ;;
             measure)
-                PID=$(pgrep -x GitUI | head -1)
+                PID=$(pgrep -x SwiftGit | head -1)
                 if [ -n "$PID" ]; then
                     footprint -p "$PID" > .dev/footprint.log 2>&1 || CODE=$?
                     vmmap --summary "$PID" >> .dev/footprint.log 2>&1 || true
                 else
-                    echo "GitUI is not running" > .dev/footprint.log; CODE=1
+                    echo "SwiftGit is not running" > .dev/footprint.log; CODE=1
                 fi
                 ;;
             commit)

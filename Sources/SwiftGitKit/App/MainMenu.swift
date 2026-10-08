@@ -30,20 +30,20 @@ enum MainMenu {
 
         // App
         let appMenu = NSMenu()
-        appMenu.addItem(withTitle: "About GitUI", action: #selector(NSApplication.orderFrontStandardAboutPanel(_:)), keyEquivalent: "")
+        appMenu.addItem(withTitle: "About SwiftGit", action: #selector(NSApplication.orderFrontStandardAboutPanel(_:)), keyEquivalent: "")
         appMenu.addItem(.separator())
         let services = NSMenu()
         let servicesItem = appMenu.addItem(withTitle: "Services", action: nil, keyEquivalent: "")
         servicesItem.submenu = services
         NSApp.servicesMenu = services
         appMenu.addItem(.separator())
-        appMenu.addItem(withTitle: "Hide GitUI", action: #selector(NSApplication.hide(_:)), keyEquivalent: "h")
+        appMenu.addItem(withTitle: "Hide SwiftGit", action: #selector(NSApplication.hide(_:)), keyEquivalent: "h")
         let hideOthers = appMenu.addItem(withTitle: "Hide Others", action: #selector(NSApplication.hideOtherApplications(_:)), keyEquivalent: "h")
         hideOthers.keyEquivalentModifierMask = [.command, .option]
         appMenu.addItem(withTitle: "Show All", action: #selector(NSApplication.unhideAllApplications(_:)), keyEquivalent: "")
         appMenu.addItem(.separator())
-        appMenu.addItem(withTitle: "Quit GitUI", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
-        add(appMenu, title: "GitUI", to: main)
+        appMenu.addItem(withTitle: "Quit SwiftGit", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
+        add(appMenu, title: "SwiftGit", to: main)
 
         // File
         let file = NSMenu(title: "File")

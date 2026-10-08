@@ -3,13 +3,13 @@
 <plist version="1.0">
 <dict>
     <key>CFBundleName</key>
-    <string>GitUI</string>
+    <string>SwiftGit</string>
     <key>CFBundleDisplayName</key>
-    <string>GitUI</string>
+    <string>SwiftGit</string>
     <key>CFBundleIdentifier</key>
-    <string>hu.pepitaponi.GitUI</string>
+    <string>hu.pepitaponi.SwiftGit</string>
     <key>CFBundleExecutable</key>
-    <string>GitUI</string>
+    <string>SwiftGit</string>
     <key>CFBundlePackageType</key>
     <string>APPL</string>
     <key>CFBundleShortVersionString</key>

@@ -1,7 +1,7 @@
 import AppKit
 import Foundation
 import Testing
-@testable import GitUIKit
+@testable import SwiftGitKit
 
 /// Builds throwaway repositories with a known history and working-tree state.
 enum Fixture {
@@ -101,7 +101,7 @@ enum Fixture {
 @MainActor
 enum UI {
     static var snapshotDir: URL {
-        // <package>/Tests/GitUITests/Support.swift → <package>/.dev/snapshots
+        // <package>/Tests/SwiftGitTests/Support.swift → <package>/.dev/snapshots
         URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
             .appendingPathComponent(".dev/snapshots", isDirectory: true)

@@ -1,20 +1,40 @@
 #!/bin/bash
-# Builds GitUI and wraps the binary into build/GitUI.app
+# Builds SwiftGit and wraps the binary into build/SwiftGit.app
+#
 # Usage: scripts/build-app.sh [release|debug]
+# Environment:
+#   VERSION=1.2.3      sets CFBundleShortVersionString (default: from Info.plist)
+#   BUILD_NUMBER=42    sets CFBundleVersion
+#   UNIVERSAL=1        builds an arm64 + x86_64 universal binary (needs Xcode)
+#   CODESIGN_IDENTITY  signing identity (default: ad-hoc "-")
 set -euo pipefail
 cd "$(dirname "$0")/.."
 CONFIG="${1:-release}"
 
-swift build -c "$CONFIG"
-BIN_DIR="$(swift build -c "$CONFIG" --show-bin-path)"
+ARCH_ARGS=()
+if [ "${UNIVERSAL:-0}" = "1" ]; then
+    ARCH_ARGS=(--arch arm64 --arch x86_64)
+fi
 
-APP="build/GitUI.app"
+swift build -c "$CONFIG" ${ARCH_ARGS[@]+"${ARCH_ARGS[@]}"}
+BIN_DIR="$(swift build -c "$CONFIG" ${ARCH_ARGS[@]+"${ARCH_ARGS[@]}"} --show-bin-path)"
+
+APP="build/SwiftGit.app"
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
-cp "$BIN_DIR/GitUI" "$APP/Contents/MacOS/GitUI"
+cp "$BIN_DIR/SwiftGit" "$APP/Contents/MacOS/SwiftGit"
 cp Resources/Info.plist "$APP/Contents/Info.plist"
-if [ "$CONFIG" = "release" ]; then
-    strip -x "$APP/Contents/MacOS/GitUI" 2>/dev/null || true
+
+PLIST="$APP/Contents/Info.plist"
+if [ -n "${VERSION:-}" ]; then
+    /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $VERSION" "$PLIST"
 fi
-codesign --force --sign - "$APP" >/dev/null 2>&1 || true
-echo "Built $APP ($(du -sh "$APP" | cut -f1))"
+if [ -n "${BUILD_NUMBER:-}" ]; then
+    /usr/libexec/PlistBuddy -c "Set :CFBundleVersion $BUILD_NUMBER" "$PLIST"
+fi
+
+if [ "$CONFIG" = "release" ]; then
+    strip -x "$APP/Contents/MacOS/SwiftGit" 2>/dev/null || true
+fi
+codesign --force --sign "${CODESIGN_IDENTITY:--}" "$APP" >/dev/null 2>&1 || true
+echo "Built $APP ($(du -sh "$APP" | cut -f1)) $(lipo -archs "$APP/Contents/MacOS/SwiftGit" 2>/dev/null || true)"

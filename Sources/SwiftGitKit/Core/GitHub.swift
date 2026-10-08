@@ -112,7 +112,7 @@ enum GitHub {
 
     private static func cacheURL(_ repo: GitHubRepo) -> URL {
         let dir = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent("GitUI", isDirectory: true)
+            .appendingPathComponent("SwiftGit", isDirectory: true)
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         return dir.appendingPathComponent("reviewers-\(repo.owner)-\(repo.name).json")
     }

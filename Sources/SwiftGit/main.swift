@@ -1,5 +1,5 @@
 import AppKit
-import GitUIKit
+import SwiftGitKit
 
 MainActor.assumeIsolated {
     let app = NSApplication.shared

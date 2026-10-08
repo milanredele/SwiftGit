@@ -1,6 +1,6 @@
 import AppKit
 import Testing
-@testable import GitUIKit
+@testable import SwiftGitKit
 
 /// Drives the real window controllers in an offscreen window (no screen
 /// access needed), asserts on the view state and writes PNG snapshots.

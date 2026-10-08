@@ -32,7 +32,7 @@ final class RepoWindowController: NSWindowController, NSWindowDelegate, NSToolba
                               styleMask: [.titled, .closable, .miniaturizable, .resizable],
                               backing: .buffered, defer: true)
         window.tabbingMode = .preferred
-        window.tabbingIdentifier = "GitUIRepository"
+        window.tabbingIdentifier = "SwiftGitRepository"
         window.title = repository.name
         window.representedURL = repository.root
         window.minSize = NSSize(width: 820, height: 480)
@@ -44,10 +44,10 @@ final class RepoWindowController: NSWindowController, NSWindowDelegate, NSToolba
         root = RootViewController(repository: repository, state: state, actions: self)
         window.contentViewController = root
         window.setContentSize(NSSize(width: 1280, height: 800))
-        if !window.setFrameUsingName("GitUIRepositoryWindow") { window.center() }
-        window.setFrameAutosaveName("GitUIRepositoryWindow")
+        if !window.setFrameUsingName("SwiftGitRepositoryWindow") { window.center() }
+        window.setFrameAutosaveName("SwiftGitRepositoryWindow")
 
-        let toolbar = NSToolbar(identifier: "GitUIToolbar")
+        let toolbar = NSToolbar(identifier: "SwiftGitToolbar")
         toolbar.delegate = self
         toolbar.displayMode = .iconAndLabel
         toolbar.allowsUserCustomization = true

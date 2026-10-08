@@ -1,6 +1,6 @@
 import Foundation
 import Testing
-@testable import GitUIKit
+@testable import SwiftGitKit
 
 @MainActor
 @Suite("Core")

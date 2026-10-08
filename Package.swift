@@ -2,23 +2,23 @@
 import PackageDescription
 
 let package = Package(
-    name: "GitUI",
+    name: "SwiftGit",
     platforms: [.macOS(.v14)],
     targets: [
         // All app code lives in the library so tests can drive it in-process.
         .target(
-            name: "GitUIKit",
-            path: "Sources/GitUIKit"
+            name: "SwiftGitKit",
+            path: "Sources/SwiftGitKit"
         ),
         .executableTarget(
-            name: "GitUI",
-            dependencies: ["GitUIKit"],
-            path: "Sources/GitUI"
+            name: "SwiftGit",
+            dependencies: ["SwiftGitKit"],
+            path: "Sources/SwiftGit"
         ),
         .testTarget(
-            name: "GitUITests",
-            dependencies: ["GitUIKit"],
-            path: "Tests/GitUITests"
+            name: "SwiftGitTests",
+            dependencies: ["SwiftGitKit"],
+            path: "Tests/SwiftGitTests"
         ),
     ]
 )
