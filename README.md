@@ -3,7 +3,9 @@
 A lightweight, native macOS git client — a fast alternative to GitKraken built
 with plain AppKit on top of the `git` and `gh` command line tools.
 
-- **Native and small:** AppKit only (no Electron, WebKit or SwiftUI), ~2 MB app.
+- **Native:** AppKit only (no Electron, WebKit or SwiftUI). The app is ~25 MB on
+  disk, almost all of it compiled syntax grammars, which macOS maps from disk
+  rather than loading into memory.
 - **Light on resources:** no polling (FSEvents only), zero idle CPU, and a target
   of ≤ 5 MB of memory per open repository tab.
 - **Uses your git:** every operation runs the real `git` binary, so hooks,
@@ -25,6 +27,10 @@ with plain AppKit on top of the `git` and `gh` command line tools.
   panes (horizontal too, hold ⌥ to scroll one side), word-level highlights,
   expandable context, an overview strip of all changes, unified mode, and
   staging / unstaging / discarding of individual hunks or selected lines.
+- Syntax highlighting in diffs via [tree-sitter](https://tree-sitter.github.io/):
+  Swift, JavaScript, TypeScript/TSX, Python, Go, Rust, C, C++, Java, JSON, Bash,
+  Ruby, CSS, HTML and C#. Both file versions are parsed in the background and
+  only the colors for the visible diff lines are kept.
 - **GitHub pull requests** with base/head selection, PR templates, draft flag
   and a searchable reviewer picker (people and teams).
 - Opens your configured `git difftool` / `git mergetool` when you want them.
