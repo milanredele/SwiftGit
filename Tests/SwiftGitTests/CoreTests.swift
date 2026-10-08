@@ -88,6 +88,29 @@ struct CoreTests {
         #expect(after.isEmpty)
     }
 
+    @Test func syntaxHighlightingSwift() throws {
+        let source = "struct B {\n    let value = 1 // note\n\tfunc run() { print(\"hi\") }\n}\n"
+        let spans = try #require(SyntaxHighlighter.shared.highlight(source, path: "x.swift", lines: [1, 2, 3, 4]))
+        let line1 = try #require(spans[1])
+        #expect(line1.contains { $0.style == .keyword && $0.start == 0 && $0.length == 6 })
+        let line2 = try #require(spans[2])
+        #expect(line2.contains { $0.style == .number })
+        #expect(line2.contains { $0.style == .comment })
+        // Tab expanded to 4 spaces: "func" starts at column 4 in the drawn text.
+        let line3 = try #require(spans[3])
+        #expect(line3.contains { $0.style == .keyword && $0.start == 4 && $0.length == 4 })
+        #expect(line3.contains { $0.style == .string })
+    }
+
+    @Test func syntaxLanguagesLoad() {
+        let h = SyntaxHighlighter.shared
+        for path in ["a.swift", "a.js", "a.ts", "a.tsx", "a.py", "a.go", "a.rs", "a.c", "a.cpp",
+                     "a.java", "a.json", "a.sh", "a.rb", "a.css", "a.html", "a.cs"] {
+            #expect(h.isSupported(path: path), "no highlighting for \(path)")
+        }
+        #expect(!h.isSupported(path: "README"))
+    }
+
     @Test func intralineHighlightsChangedWord() {
         let (old, new) = Intraline.compute("    let value = 1", "    let value = 2")
         #expect(old == [NSRange(location: 16, length: 1)])

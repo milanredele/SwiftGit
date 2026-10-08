@@ -24,6 +24,26 @@ enum Theme {
     static let markerDeleted = dynamic(rgb(0.90, 0.25, 0.25), rgb(0.95, 0.40, 0.40))
     static let markerChanged = dynamic(rgb(0.25, 0.50, 0.95), rgb(0.40, 0.60, 1.0))
 
+    private static let syntaxColors: [NSColor] = SyntaxStyle.allCases.map { style in
+        switch style {
+        case .keyword: return dynamic(rgb(0.61, 0.14, 0.58), rgb(1.00, 0.48, 0.70))
+        case .string: return dynamic(rgb(0.77, 0.10, 0.09), rgb(1.00, 0.51, 0.44))
+        case .comment: return dynamic(rgb(0.37, 0.42, 0.47), rgb(0.50, 0.55, 0.60))
+        case .number: return dynamic(rgb(0.11, 0.00, 0.81), rgb(0.85, 0.79, 0.49))
+        case .type: return dynamic(rgb(0.04, 0.31, 0.47), rgb(0.36, 0.85, 1.00))
+        case .function: return dynamic(rgb(0.20, 0.43, 0.45), rgb(0.40, 0.72, 0.64))
+        case .property: return dynamic(rgb(0.20, 0.43, 0.45), rgb(0.63, 0.40, 0.90))
+        case .constant: return dynamic(rgb(0.11, 0.00, 0.81), rgb(0.85, 0.79, 0.49))
+        case .builtin: return dynamic(rgb(0.42, 0.21, 0.66), rgb(0.70, 0.51, 0.92))
+        case .tag: return dynamic(rgb(0.61, 0.14, 0.58), rgb(1.00, 0.48, 0.70))
+        case .attribute: return dynamic(rgb(0.51, 0.37, 0.01), rgb(0.80, 0.59, 0.41))
+        case .escape: return dynamic(rgb(0.77, 0.10, 0.09), rgb(1.00, 0.51, 0.44))
+        case .label: return dynamic(rgb(0.39, 0.22, 0.13), rgb(0.99, 0.56, 0.25))
+        }
+    }
+
+    static func syntaxColor(_ style: SyntaxStyle) -> NSColor { syntaxColors[Int(style.rawValue)] }
+
     static let laneColors: [NSColor] = [
         .systemBlue, .systemPink, .systemGreen, .systemOrange, .systemPurple,
         .systemTeal, .systemRed, .systemYellow, .systemIndigo, .systemBrown,

@@ -494,6 +494,39 @@ final class Repository {
 
     // MARK: Queries
 
+    enum FileVersion: Equatable {
+        case none
+        case worktree(String)
+        case index(String)
+        case commit(String, String)
+    }
+
+    /// Full text of one version of a file (for syntax highlighting), or nil if
+    /// missing, binary or too large.
+    func fileText(_ version: FileVersion) async -> String? {
+        let data: Data
+        switch version {
+        case .none:
+            return nil
+        case .worktree(let path):
+            let url = root.appendingPathComponent(path)
+            guard let attrs = try? FileManager.default.attributesOfItem(atPath: url.path),
+                  let size = attrs[.size] as? Int, size <= SyntaxHighlighter.maxBytes,
+                  let d = try? Data(contentsOf: url) else { return nil }
+            data = d
+        case .index(let path):
+            let r = await git.run(["show", ":\(path)"])
+            guard r.ok else { return nil }
+            data = r.stdout
+        case .commit(let rev, let path):
+            let r = await git.run(["show", "\(rev):\(path)"])
+            guard r.ok else { return nil }
+            data = r.stdout
+        }
+        guard data.count <= SyntaxHighlighter.maxBytes, !data.prefix(8000).contains(0) else { return nil }
+        return String(decoding: data, as: UTF8.self)
+    }
+
     func lastCommitMessage() async -> String {
         let r = await git.run(["log", "-1", "--format=%B"])
         return r.ok ? r.output.trimmingCharacters(in: .whitespacesAndNewlines) : ""

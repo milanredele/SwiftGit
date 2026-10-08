@@ -62,6 +62,9 @@ final class DiffViewController: NSViewController {
     private var rows: [DiffRow] = []
     private var intralineCache: [Int: (old: [NSRange], new: [NSRange])] = [:]
     private var loadTask: Task<Void, Never>?
+    private var syntaxTask: Task<Void, Never>?
+    private var syntaxOld: [Int: [SyntaxSpan]] = [:]
+    private var syntaxNew: [Int: [SyntaxSpan]] = [:]
     private var contextLines = 3
     private var allowLarge = false
     private let largeLimit = 3_000_000
@@ -273,6 +276,7 @@ final class DiffViewController: NSViewController {
 
     private func apply(_ d: FileDiff?, resetScroll: Bool) {
         intralineCache.removeAll()
+        defer { startSyntaxHighlighting() }
         guard case .none = source else {
             guard let d else {
                 diff = nil; rows = []
@@ -538,7 +542,67 @@ final class DiffViewController: NSViewController {
     }
 
     /// Hook for syntax highlighting (foreground colors per UTF-16 range).
-    func syntaxColors(lineIndex: Int) -> [(NSRange, NSColor)]? { nil }
+    func syntaxColors(lineIndex: Int) -> [(NSRange, NSColor)]? {
+        guard let d = diff, lineIndex < d.lines.count else { return nil }
+        let line = d.lines[lineIndex]
+        let spans = line.kind == .deleted ? syntaxOld[Int(line.oldNo)] : syntaxNew[Int(line.newNo)]
+        guard let spans, !spans.isEmpty else { return nil }
+        return spans.map { (NSRange(location: Int($0.start), length: Int($0.length)), Theme.syntaxColor($0.style)) }
+    }
+
+    var testSyntaxLineCount: Int { syntaxOld.count + syntaxNew.count }
+
+    /// Loads both full versions of the file, highlights them off the main
+    /// thread and keeps only the spans of the lines shown in the diff.
+    private func startSyntaxHighlighting() {
+        syntaxTask?.cancel()
+        syntaxOld = [:]
+        syntaxNew = [:]
+        guard let d = diff, let change = source.change,
+              SyntaxHighlighter.shared.languageID(forPath: change.path) != nil else { return }
+        var oldLines = Set<Int>(), newLines = Set<Int>()
+        for l in d.lines {
+            if l.kind != .added && l.oldNo > 0 { oldLines.insert(Int(l.oldNo)) }
+            if l.kind != .deleted && l.newNo > 0 { newLines.insert(Int(l.newNo)) }
+        }
+        let oldPath = change.origPath ?? change.path
+        let oldVersion: Repository.FileVersion
+        let newVersion: Repository.FileVersion
+        switch source {
+        case .none:
+            return
+        case .working(let c, let staged):
+            if staged {
+                oldVersion = repository.status.headOID == nil || c.code == "A" ? .none : .commit("HEAD", oldPath)
+                newVersion = c.code == "D" ? .none : .index(c.path)
+            } else {
+                oldVersion = c.isUntracked ? .none : .index(oldPath)
+                newVersion = c.code == "D" ? .none : .worktree(c.path)
+            }
+        case .commit(let c, let hash, let parent):
+            oldVersion = (parent == nil || c.code == "A") ? .none : .commit(parent!, oldPath)
+            newVersion = c.code == "D" ? .none : .commit(hash, c.path)
+        }
+        let src = source
+        let repo = repository
+        let path = change.path
+        syntaxTask = Task { [weak self] in
+            async let oldText = repo.fileText(oldVersion)
+            async let newText = repo.fileText(newVersion)
+            let (ot, nt) = await (oldText, newText)
+            guard !Task.isCancelled else { return }
+            let result = await Task.detached(priority: .userInitiated) { () -> ([Int: [SyntaxSpan]], [Int: [SyntaxSpan]]) in
+                let h = SyntaxHighlighter.shared
+                let o = ot.flatMap { h.highlight($0, path: path, lines: oldLines) } ?? [:]
+                let n = nt.flatMap { h.highlight($0, path: path, lines: newLines) } ?? [:]
+                return (o, n)
+            }.value
+            guard let self, !Task.isCancelled, self.source == src else { return }
+            self.syntaxOld = result.0
+            self.syntaxNew = result.1
+            for p in [self.leftPane, self.rightPane, self.unifiedPane] { p.needsDisplay = true }
+        }
+    }
 
     // MARK: Selection
 

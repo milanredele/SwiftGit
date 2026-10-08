@@ -24,6 +24,10 @@ rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp "$BIN_DIR/SwiftGit" "$APP/Contents/MacOS/SwiftGit"
 cp Resources/Info.plist "$APP/Contents/Info.plist"
+# Grammar query files (tree-sitter highlights.scm) ship as SwiftPM resource bundles.
+for b in "$BIN_DIR"/*.bundle; do
+    [ -e "$b" ] && cp -R "$b" "$APP/Contents/Resources/"
+done
 
 PLIST="$APP/Contents/Info.plist"
 if [ -n "${VERSION:-}" ]; then

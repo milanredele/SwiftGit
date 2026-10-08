@@ -79,6 +79,13 @@ struct UITests {
         await UI.settle(window)
         UI.snapshot(window, "changes-unified")
         changes.diffVC.toggleUnified()
+
+        // Syntax highlighting on the staged Swift file
+        let swiftFile = try #require(changes.testStaged.first { $0.path == "src/b.swift" })
+        changes.diffVC.show(.working(swiftFile, staged: true))
+        await UI.wait("syntax spans") { changes.diffVC.testSyntaxLineCount > 0 }
+        await UI.settle(window)
+        UI.snapshot(window, "changes-syntax")
         window.close()
     }
 
