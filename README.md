@@ -1,7 +1,7 @@
 # SwiftGit
 
-A lightweight, native macOS git client — a fast alternative to GitKraken built
-with plain AppKit on top of the `git` and `gh` command line tools.
+A lightweight, native macOS git client built with plain AppKit on top of the
+`git` and `gh` command line tools.
 
 - **Native:** AppKit only (no Electron, WebKit or SwiftUI). The app is ~25 MB on
   disk, almost all of it compiled syntax grammars, which macOS maps from disk
@@ -29,7 +29,7 @@ with plain AppKit on top of the `git` and `gh` command line tools.
   staging / unstaging / discarding of individual hunks or selected lines.
 - Syntax highlighting in diffs via [tree-sitter](https://tree-sitter.github.io/):
   Swift, JavaScript, TypeScript/TSX, Python, Go, Rust, C, C++, Java, JSON, Bash,
-  Ruby, CSS, HTML and C#. Both file versions are parsed in the background and
+  Ruby, CSS, HTML, C# and Ada. Both file versions are parsed in the background and
   only the colors for the visible diff lines are kept.
 - **GitHub pull requests** with base/head selection, PR templates, draft flag
   and a searchable reviewer picker (people and teams).

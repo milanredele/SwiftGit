@@ -19,6 +19,15 @@
       }
     },
     {
+      "identity" : "tree-sitter-ada",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/briot/tree-sitter-ada",
+      "state" : {
+        "branch" : "master",
+        "revision" : "0a4c27dc1308a9d2742de22e5fcfc0c137b3d3f3"
+      }
+    },
+    {
       "identity" : "tree-sitter-bash",
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/tree-sitter/tree-sitter-bash",

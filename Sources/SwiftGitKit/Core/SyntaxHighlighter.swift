@@ -1,5 +1,6 @@
 import Foundation
 import SwiftTreeSitter
+import TreeSitterAda
 import TreeSitterBash
 import TreeSitterC
 import TreeSitterCPP
@@ -97,6 +98,7 @@ final class SyntaxHighlighter: @unchecked Sendable {
         case "css": return "css"
         case "html", "htm", "xhtml": return "html"
         case "cs": return "csharp"
+        case "ads", "adb", "ada": return "ada"
         default: return nil
         }
     }
@@ -144,6 +146,7 @@ final class SyntaxHighlighter: @unchecked Sendable {
         case "css": return (tree_sitter_css(), [("TreeSitterCSS_TreeSitterCSS", "highlights")])
         case "html": return (tree_sitter_html(), [("TreeSitterHTML_TreeSitterHTML", "highlights")])
         case "csharp": return (tree_sitter_c_sharp(), [("TreeSitterCSharp_TreeSitterCSharp", "highlights")])
+        case "ada": return (tree_sitter_ada(), [("TreeSitterAda_TreeSitterAda", "highlights")])
         default: return nil
         }
     }

@@ -18,6 +18,7 @@ let grammars: [(package: String, product: String)] = [
     ("tree-sitter-css", "TreeSitterCSS"),
     ("tree-sitter-html", "TreeSitterHTML"),
     ("tree-sitter-c-sharp", "TreeSitterCSharp"),
+    ("tree-sitter-ada", "TreeSitterAda"),
 ]
 
 let package = Package(
@@ -43,6 +44,8 @@ let package = Package(
         .package(url: "https://github.com/tree-sitter/tree-sitter-css", .upToNextMinor(from: "0.23.0")),
         .package(url: "https://github.com/tree-sitter/tree-sitter-html", from: "0.23.0"),
         .package(url: "https://github.com/tree-sitter/tree-sitter-c-sharp", from: "0.23.0"),
+        // No semver tags on this repo yet, so track its main branch.
+        .package(url: "https://github.com/briot/tree-sitter-ada", branch: "master"),
     ],
     targets: [
         // All app code lives in the library so tests can drive it in-process.

@@ -102,10 +102,18 @@ struct CoreTests {
         #expect(line3.contains { $0.style == .string })
     }
 
+    @Test func syntaxHighlightingAda() throws {
+        let source = "procedure Hello is\nbegin\n   Put_Line (\"Hi\"); -- greet\nend Hello;\n"
+        let spans = try #require(SyntaxHighlighter.shared.highlight(source, path: "hello.adb", lines: [1, 2, 3, 4]))
+        #expect(spans[1]?.contains { $0.style == .keyword && $0.start == 0 } == true)
+        #expect(spans[3]?.contains { $0.style == .string } == true)
+        #expect(spans[3]?.contains { $0.style == .comment } == true)
+    }
+
     @Test func syntaxLanguagesLoad() {
         let h = SyntaxHighlighter.shared
         for path in ["a.swift", "a.js", "a.ts", "a.tsx", "a.py", "a.go", "a.rs", "a.c", "a.cpp",
-                     "a.java", "a.json", "a.sh", "a.rb", "a.css", "a.html", "a.cs"] {
+                     "a.java", "a.json", "a.sh", "a.rb", "a.css", "a.html", "a.cs", "a.ads", "a.adb"] {
             #expect(h.isSupported(path: path), "no highlighting for \(path)")
         }
         #expect(!h.isSupported(path: "README"))
