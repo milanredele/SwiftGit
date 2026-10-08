@@ -1,0 +1,69 @@
+name: Build & Release
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: macos-26
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Toolchain
+        run: |
+          sw_vers
+          xcodebuild -version
+          swift --version
+
+      - name: Test
+        run: |
+          mkdir -p .dev/snapshots
+          swift test
+
+      - name: Upload test snapshots
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-snapshots
+          path: .dev/snapshots
+          if-no-files-found: ignore
+
+      - name: Build universal app
+        env:
+          UNIVERSAL: "1"
+          VERSION: "0.1.${{ github.run_number }}"
+          BUILD_NUMBER: "${{ github.run_number }}"
+        run: |
+          scripts/build-app.sh release
+          cd build
+          ditto -c -k --keepParent SwiftGit.app "SwiftGit-${VERSION}.zip"
+          shasum -a 256 "SwiftGit-${VERSION}.zip" | tee "SwiftGit-${VERSION}.zip.sha256"
+
+      - name: Upload app artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: SwiftGit-app
+          path: build/SwiftGit-*.zip*
+
+      - name: Publish release
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: "0.1.${{ github.run_number }}"
+        run: |
+          gh release create "v${VERSION}" \
+            build/SwiftGit-${VERSION}.zip build/SwiftGit-${VERSION}.zip.sha256 \
+            --title "SwiftGit ${VERSION}" \
+            --target "${GITHUB_SHA}" \
+            --generate-notes
