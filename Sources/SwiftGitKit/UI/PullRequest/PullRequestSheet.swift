@@ -18,6 +18,12 @@ final class PullRequestSheet: NSWindowController, NSTableViewDataSource, NSTable
     private var autoBody = ""
     private var defaultsTask: Task<Void, Never>?
     private var aiCancel: CancelToken?
+    /// Open pull request for the selected head, if there is one: the sheet then updates it.
+    private var existing: GitHub.ExistingPullRequest?
+    private var existingTask: Task<Void, Never>?
+    /// The local head and its remote branch have diverged (rebased/amended after pushing).
+    private var needsForce = false
+    private var pushNote = ""
     /// Tests turn this off to skip the gh network calls.
     var loadsGitHubData = true
 
@@ -36,6 +42,8 @@ final class PullRequestSheet: NSWindowController, NSTableViewDataSource, NSTable
     private let createButton = NSButton(title: "Create Pull Request", target: nil, action: nil)
     private let cancelButton = NSButton(title: "Cancel", target: nil, action: nil)
     private let generateButton = NSButton(title: "Generate", target: nil, action: nil)
+    private let openExistingButton = NSButton(title: "Open on GitHub", target: nil, action: nil)
+    private let noteLabel = NSTextField(wrappingLabelWithString: "")
 
     init(repository: Repository, head: String) {
         self.repository = repository
@@ -103,6 +111,13 @@ final class PullRequestSheet: NSWindowController, NSTableViewDataSource, NSTable
         cancelButton.keyEquivalent = "\u{1b}"
         cancelButton.target = self
         cancelButton.action = #selector(cancel(_:))
+        openExistingButton.bezelStyle = .rounded
+        openExistingButton.target = self
+        openExistingButton.action = #selector(openExisting(_:))
+        openExistingButton.isHidden = true
+        noteLabel.font = .systemFont(ofSize: 11)
+        noteLabel.textColor = .secondaryLabelColor
+        noteLabel.isHidden = true
 
         func rowLabel(_ s: String) -> NSTextField {
             let l = makeLabel(s, font: .systemFont(ofSize: 12), color: .secondaryLabelColor)
@@ -129,6 +144,7 @@ final class PullRequestSheet: NSWindowController, NSTableViewDataSource, NSTable
             [rowLabel("Description"), bodyScroll],
             [rowLabel("Reviewers"), reviewerBox],
             [NSGridCell.emptyContentView, options],
+            [NSGridCell.emptyContentView, noteLabel],
         ])
         grid.translatesAutoresizingMaskIntoConstraints = false
         grid.rowSpacing = 10
@@ -141,7 +157,7 @@ final class PullRequestSheet: NSWindowController, NSTableViewDataSource, NSTable
         grid.cell(for: bodyScroll)?.yPlacement = .fill
         grid.cell(for: reviewerBox)?.yPlacement = .fill
 
-        let footer = NSStackView(views: [spinner, statusLabel, NSView(), cancelButton, createButton])
+        let footer = NSStackView(views: [spinner, statusLabel, NSView(), openExistingButton, cancelButton, createButton])
         footer.orientation = .horizontal
         footer.translatesAutoresizingMaskIntoConstraints = false
         statusLabel.lineBreakMode = .byTruncatingTail
@@ -164,6 +180,7 @@ final class PullRequestSheet: NSWindowController, NSTableViewDataSource, NSTable
             reviewerScroll.heightAnchor.constraint(greaterThanOrEqualToConstant: 150),
             reviewerScroll.widthAnchor.constraint(equalTo: titleRow.widthAnchor),
             searchField.widthAnchor.constraint(equalTo: titleRow.widthAnchor),
+            noteLabel.widthAnchor.constraint(equalTo: titleRow.widthAnchor),
             basePopup.widthAnchor.constraint(greaterThanOrEqualToConstant: 160),
             headPopup.widthAnchor.constraint(greaterThanOrEqualToConstant: 160),
         ])
@@ -178,6 +195,7 @@ final class PullRequestSheet: NSWindowController, NSTableViewDataSource, NSTable
     private func finish() {
         aiCancel?.cancel()
         defaultsTask?.cancel()
+        existingTask?.cancel()
         guard let window, let parent = window.sheetParent else { return }
         parent.endSheet(window)
     }
@@ -215,6 +233,7 @@ final class PullRequestSheet: NSWindowController, NSTableViewDataSource, NSTable
         applyFilter()
 
         guard loadsGitHubData else { return }
+        lookUpExistingPullRequest()
 
         if GitHub.executable == nil {
             setStatus(GitHub.missingMessage)
@@ -227,7 +246,7 @@ final class PullRequestSheet: NSWindowController, NSTableViewDataSource, NSTable
             async let me = GitHub.viewerLogin()
             let (defaultBranch, login) = await (def, me)
             viewer = login
-            if let defaultBranch, basePopup.itemTitles.contains(defaultBranch),
+            if existing == nil, let defaultBranch, basePopup.itemTitles.contains(defaultBranch),
                basePopup.titleOfSelectedItem != defaultBranch {
                 basePopup.selectItem(withTitle: defaultBranch)
                 updateDefaults()
@@ -258,7 +277,10 @@ final class PullRequestSheet: NSWindowController, NSTableViewDataSource, NSTable
         }
     }
 
-    @objc private func headChanged(_ sender: Any?) { updateDefaults() }
+    @objc private func headChanged(_ sender: Any?) {
+        updateDefaults()
+        lookUpExistingPullRequest()
+    }
 
     @objc private func baseChanged(_ sender: Any?) { updateDefaults() }
 
@@ -276,8 +298,6 @@ final class PullRequestSheet: NSWindowController, NSTableViewDataSource, NSTable
     /// Fields the user has edited are left alone.
     private func updateDefaults() {
         guard let head = headPopup.titleOfSelectedItem else { return }
-        let ref = repository.localBranch(named: head)
-        pushBox.state = (ref?.upstream == nil || (ref?.ahead ?? 0) > 0) ? .on : .off
         let bases = baseRefs()
         defaultsTask?.cancel()
         defaultsTask = Task {
@@ -285,15 +305,115 @@ final class PullRequestSheet: NSWindowController, NSTableViewDataSource, NSTable
             var title = found?.commits.first?.subject ?? ""
             let body = found?.commits.first?.body ?? ""
             if title.isEmpty { title = await repository.lastCommitSubject(of: head) }
+            await updatePushState(head: head)
             guard !Task.isCancelled else { return }
-            if titleField.stringValue.isEmpty || titleField.stringValue == autoTitle { titleField.stringValue = title }
-            autoTitle = title
-            if template == nil {
-                if bodyView.string.isEmpty || bodyView.string == autoBody { setBody(body) }
-                autoBody = body
+            // An existing pull request's own title and description take precedence.
+            if existing == nil {
+                if titleField.stringValue.isEmpty || titleField.stringValue == autoTitle { titleField.stringValue = title }
+                autoTitle = title
+                if template == nil {
+                    if bodyView.string.isEmpty || bodyView.string == autoBody { setBody(body) }
+                    autoBody = body
+                }
             }
             defaultsTask = nil
         }
+    }
+
+    /// Decides whether (and how) the head must be pushed: compares it with the
+    /// remote branch of the same name, which is what the pull request shows.
+    private func updatePushState(head: String) async {
+        guard let remote = remoteName else { return }
+        let d = await repository.divergence(local: head, remoteRef: "refs/remotes/\(remote)/\(head)")
+        guard headPopup.titleOfSelectedItem == head else { return }
+        needsForce = false
+        pushNote = ""
+        var push = false
+        if let d {
+            if d.ahead > 0 && d.behind > 0 {
+                needsForce = true
+                push = true
+                pushNote = "\(head) was rewritten (rebased or amended) after it was pushed: \(RepoWindowController.commits(d.ahead)) "
+                    + "only here, \(RepoWindowController.commits(d.behind)) only on \(remote). Force push (with lease) "
+                    + "replaces \(remote)/\(head) with your version."
+            } else if d.ahead > 0 {
+                push = true
+            } else if d.behind > 0 {
+                pushNote = "\(remote)/\(head) has \(RepoWindowController.commits(d.behind)) that your local branch doesn’t; "
+                    + "the pull request shows the remote version."
+            }
+        } else {
+            push = true   // not on the remote yet
+        }
+        pushBox.title = needsForce ? "Force push branch first" : "Push branch first"
+        pushBox.state = push ? .on : .off
+        updateNote()
+    }
+
+    private func updateNote() {
+        var lines: [String] = []
+        if let pr = existing {
+            lines.append("\(pr.isDraft ? "Draft pull request" : "Pull request") #\(pr.number) is already open for this branch"
+                         + " (into \(pr.base)). “Update Pull Request” changes it instead of opening a new one.")
+        }
+        if !pushNote.isEmpty { lines.append(pushNote) }
+        noteLabel.stringValue = lines.joined(separator: "\n")
+        noteLabel.textColor = needsForce ? .systemOrange : .secondaryLabelColor
+        noteLabel.isHidden = lines.isEmpty
+    }
+
+    // MARK: Existing pull request
+
+    private func lookUpExistingPullRequest() {
+        existingTask?.cancel()
+        setExisting(nil)
+        guard loadsGitHubData, GitHub.executable != nil, let gh = ghRepo,
+              let head = headPopup.titleOfSelectedItem else { return }
+        existingTask = Task {
+            let pr = try? await GitHub.openPullRequest(gh, head: head)
+            guard !Task.isCancelled, headPopup.titleOfSelectedItem == head else { return }
+            existingTask = nil
+            setExisting(pr ?? nil)
+        }
+    }
+
+    /// Switches the sheet between creating a new pull request and updating `pr`.
+    func setExisting(_ pr: GitHub.ExistingPullRequest?) {
+        let previous = existing
+        existing = pr
+        if let pr {
+            window?.title = "Update Pull Request #\(pr.number)" + (ghRepo.map { " — \($0.slug)" } ?? "")
+            createButton.title = "Update Pull Request"
+            draftBox.title = "Draft"
+            draftBox.state = pr.isDraft ? .on : .off
+            openExistingButton.isHidden = false
+            if titleField.stringValue.isEmpty || titleField.stringValue == autoTitle { titleField.stringValue = pr.title }
+            autoTitle = pr.title
+            if bodyView.string.isEmpty || bodyView.string == autoBody || bodyView.string == template { setBody(pr.body) }
+            autoBody = pr.body
+            if basePopup.itemTitles.contains(pr.base) { basePopup.selectItem(withTitle: pr.base) }
+            selected = Set(pr.reviewers)
+            applyFilter()
+        } else if previous != nil {
+            window?.title = "Create Pull Request" + (ghRepo.map { " — \($0.slug)" } ?? "")
+            createButton.title = "Create Pull Request"
+            draftBox.title = "Create as draft"
+            draftBox.state = .off
+            openExistingButton.isHidden = true
+            selected = []
+            applyFilter()
+            // Back to the commit-based defaults for the new head.
+            if titleField.stringValue == autoTitle { titleField.stringValue = "" }
+            if bodyView.string == autoBody { setBody(template ?? "") }
+            autoTitle = ""
+            autoBody = template ?? ""
+            updateDefaults()
+        }
+        updateNote()
+    }
+
+    @objc private func openExisting(_ sender: Any?) {
+        if let s = existing?.url, let url = URL(string: s) { NSWorkspace.shared.open(url) }
     }
 
     /// Replaces the description as one undoable edit.
@@ -403,7 +523,8 @@ final class PullRequestSheet: NSWindowController, NSTableViewDataSource, NSTable
     @objc private func cancel(_ sender: Any?) { finish() }
 
     @objc private func create(_ sender: Any?) {
-        guard let gh = ghRepo, let head = headPopup.titleOfSelectedItem, let base = basePopup.titleOfSelectedItem else { return }
+        guard let gh = ghRepo, let remote = remoteName, let head = headPopup.titleOfSelectedItem,
+              let base = basePopup.titleOfSelectedItem else { return }
         let title = titleField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !title.isEmpty else {
             window?.makeFirstResponder(titleField)
@@ -414,44 +535,106 @@ final class PullRequestSheet: NSWindowController, NSTableViewDataSource, NSTable
             setStatus("The head and base branches are the same.")
             return
         }
-        let request = GitHub.PullRequestRequest(repo: gh, base: base, head: head, title: title, body: bodyView.string,
-                                                reviewers: selected.sorted(), draft: draftBox.state == .on)
+        let body = bodyView.string
+        let reviewers = selected.sorted()
+        let draft = draftBox.state == .on
         let shouldPush = pushBox.state == .on
+        let force = shouldPush && needsForce
+        let pr = existing
         setEnabled(false)
         Task {
+            defer { setEnabled(true) }
             if shouldPush {
-                setStatus("Pushing \(head)…", busy: true)
-                guard await repository.push(branch: head) else {
-                    setStatus("Push failed.")
-                    setEnabled(true)
+                setStatus(force ? "Force pushing \(head)…" : "Pushing \(head)…", busy: true)
+                let r = await repository.pushForPullRequest(branch: head, remote: remote, force: force)
+                guard r.ok else {
+                    setStatus("")
+                    await explainPushFailure(r, head: head, remote: remote, forced: force)
                     return
                 }
+                await updatePushState(head: head)
             }
-            setStatus("Creating pull request…", busy: true)
             do {
-                let url = try await GitHub.createPullRequest(request, cwd: repository.root)
-                setStatus("")
-                let parent = window?.sheetParent
-                finish()
-                try? await Task.sleep(nanoseconds: 350_000_000)
-                let alert = NSAlert()
-                alert.messageText = "Pull request created"
-                alert.informativeText = url
-                alert.addButton(withTitle: "Open in Browser")
-                alert.addButton(withTitle: "Copy Link")
-                alert.addButton(withTitle: "Close")
-                let handle: (NSApplication.ModalResponse) -> Void = { resp in
-                    if resp == .alertFirstButtonReturn, let u = URL(string: url) { NSWorkspace.shared.open(u) }
-                    if resp == .alertSecondButtonReturn {
-                        NSPasteboard.general.clearContents()
-                        NSPasteboard.general.setString(url, forType: .string)
-                    }
+                if let pr {
+                    setStatus("Updating pull request #\(pr.number)…", busy: true)
+                    let current = Set(pr.reviewers), wanted = Set(reviewers)
+                    let update = GitHub.PullRequestUpdate(
+                        repo: gh, number: pr.number, title: title, body: body,
+                        base: base == pr.base ? nil : base,
+                        addReviewers: wanted.subtracting(current).sorted(),
+                        removeReviewers: current.subtracting(wanted).sorted(),
+                        draft: draft == pr.isDraft ? nil : draft)
+                    try await GitHub.updatePullRequest(update, cwd: repository.root)
+                    setStatus("")
+                    done(title: "Pull request #\(pr.number) updated", url: pr.url)
+                } else {
+                    setStatus("Creating pull request…", busy: true)
+                    let request = GitHub.PullRequestRequest(repo: gh, base: base, head: head, title: title, body: body,
+                                                            reviewers: reviewers, draft: draft)
+                    let url = try await GitHub.createPullRequest(request, cwd: repository.root)
+                    setStatus("")
+                    done(title: "Pull request created", url: url)
                 }
-                if let parent { alert.beginSheetModal(for: parent, completionHandler: handle) } else { handle(alert.runModal()) }
             } catch {
-                setStatus(error.localizedDescription)
-                setEnabled(true)
+                setStatus("")
+                let message = error.localizedDescription
+                if pr == nil, message.lowercased().contains("already exists"),
+                   let found = try? await GitHub.openPullRequest(gh, head: head) {
+                    setExisting(found)
+                    await Prompt.error(window, title: "A pull request already exists for \(head)",
+                                       message: "#\(found.number) (\(found.isDraft ? "draft, " : "")into \(found.base)) is already open for this branch. "
+                                        + "The form now shows it: review the title, description and reviewers, then click Update Pull Request.")
+                } else {
+                    await Prompt.error(window, title: pr == nil ? "Couldn’t create the pull request" : "Couldn’t update the pull request",
+                                       message: message)
+                }
             }
+        }
+    }
+
+    /// Explains a refused push in terms of what happened to the branch.
+    private func explainPushFailure(_ r: RunResult, head: String, remote: String, forced: Bool) async {
+        let button = createButton.title
+        switch PushProblem.classify(r.stderr) {
+        case .diverged where !forced:
+            // git doesn't update remote/head when it rejects a push: fetch it so the counts are right.
+            _ = await repository.fetchBranch(head, remote: remote)
+            await updatePushState(head: head)
+            var message = "\(remote)/\(head) has commits that your local \(head) doesn’t. That is what happens when a branch is "
+                + "rebased or amended after it was pushed (for example while a draft pull request was open)."
+            if needsForce {
+                message += "\n\n“Force push branch first” is now ticked: click \(button) again to replace \(remote)/\(head) "
+                    + "with your version. If someone else pushed to this branch, pull their commits first instead."
+            }
+            await Prompt.error(window, title: "Push rejected: \(head) was rewritten", message: message)
+        case .staleLease, .diverged:
+            await Prompt.error(window, title: "Force push refused",
+                               message: "\(remote)/\(head) changed since your last fetch, so someone may have pushed to it. "
+                                + "Fetch, check what was pushed, then try again.\n\n\(r.errorMessage)")
+        case .other:
+            await Prompt.error(window, title: "Couldn’t push \(head)", message: r.errorMessage)
+        }
+    }
+
+    private func done(title: String, url: String) {
+        let parent = window?.sheetParent
+        finish()
+        Task {
+            try? await Task.sleep(nanoseconds: 350_000_000)
+            let alert = NSAlert()
+            alert.messageText = title
+            alert.informativeText = url
+            alert.addButton(withTitle: "Open in Browser")
+            alert.addButton(withTitle: "Copy Link")
+            alert.addButton(withTitle: "Close")
+            let handle: (NSApplication.ModalResponse) -> Void = { resp in
+                if resp == .alertFirstButtonReturn, let u = URL(string: url) { NSWorkspace.shared.open(u) }
+                if resp == .alertSecondButtonReturn {
+                    NSPasteboard.general.clearContents()
+                    NSPasteboard.general.setString(url, forType: .string)
+                }
+            }
+            if let parent { alert.beginSheetModal(for: parent, completionHandler: handle) } else { handle(alert.runModal()) }
         }
     }
 
@@ -467,6 +650,11 @@ final class PullRequestSheet: NSWindowController, NSTableViewDataSource, NSTable
     var testTitle: String { titleField.stringValue }
     var testBody: String { bodyView.string }
     var testIsUpdating: Bool { defaultsTask != nil }
+    var testPushTitle: String { pushBox.title }
+    var testPushOn: Bool { pushBox.state == .on }
+    var testNote: String { noteLabel.isHidden ? "" : noteLabel.stringValue }
+    var testCreateTitle: String { createButton.title }
+    var testSelectedReviewers: Set<String> { selected }
     func testSetTitle(_ s: String) { titleField.stringValue = s }
     func testSelect(head: String? = nil, base: String? = nil) {
         if let head { headPopup.selectItem(withTitle: head); headChanged(headPopup) }

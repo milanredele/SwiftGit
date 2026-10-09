@@ -36,7 +36,12 @@ A lightweight, native macOS git client built with plain AppKit on top of the
   description default to the branch's earliest commit message. If the
   [Claude Code](https://claude.com/claude-code) CLI (`claude`) is installed,
   a **Generate** button writes them from all of the branch's commit messages
-  using the small Haiku model.
+  using the small Haiku model, keeping the commits' conventions (e.g. a
+  `feat:` / `fix(scope):` prefix). If the branch already has an open (draft)
+  pull request, the sheet updates that one instead, and a branch that was
+  rebased after pushing is force pushed (with lease) first.
+- Push explains rejections: after a rebase or amend it shows how the local and
+  remote branch diverged and offers a force push (with lease) or a pull.
 - The active `gh` account (and your organization, when it owns the repository)
   is shown in the toolbar; its menu switches between logged-in accounts.
 - Opens your configured `git difftool` / `git mergetool` when you want them.

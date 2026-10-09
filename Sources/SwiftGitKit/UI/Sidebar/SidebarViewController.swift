@@ -394,7 +394,7 @@ final class SidebarViewController: NSViewController, NSOutlineViewDataSource, NS
     }
 
     @objc private func menuPush(_ item: NSMenuItem) {
-        if let ref = node(item)?.ref { Task { await repository.push(branch: ref.name) } }
+        if let ref = node(item)?.ref { actions?.pushExplainingRejection(branch: ref.name) }
     }
 
     @objc private func menuPullRequest(_ item: NSMenuItem) {

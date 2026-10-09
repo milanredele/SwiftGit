@@ -393,5 +393,98 @@ struct CoreTests {
         print("DIAG claude draft (\(Int(Date().timeIntervalSince(started)))s):", draft.title, "|", draft.body)
         #expect(!draft.title.isEmpty)
     }
+
+    @Test func conventionalCommitPrefixes() {
+        #expect(CommitStyle.prefix(of: "feat(ui): add button") == .init(type: "feat", scope: "ui", breaking: false))
+        #expect(CommitStyle.prefix(of: "fix!: drop v1") == .init(type: "fix", scope: nil, breaking: true))
+        #expect(CommitStyle.prefix(of: "Merge branch 'main'") == nil)
+        #expect(CommitStyle.prefix(of: "WIP: stuff") == nil)
+        #expect(CommitStyle.prefix(of: "feat:no space") == nil)
+
+        #expect(CommitStyle.pullRequestPrefix(["chore: bump", "feat: add export", "fix: typo"])?.text == "feat:")
+        #expect(CommitStyle.pullRequestPrefix(["fix(api): a", "test(api): b"])?.text == "fix(api):")
+        #expect(CommitStyle.pullRequestPrefix(["fix(api): a", "fix(ui): b"])?.text == "fix:")
+        #expect(CommitStyle.pullRequestPrefix(["chore: a", "chore!: b"])?.text == "chore!:")
+        #expect(CommitStyle.pullRequestPrefix(["Add export", "Fix typo", "feat: x"]) == nil)
+        #expect(CommitStyle.pullRequestPrefix([]) == nil)
+
+        let feat = CommitStyle.Prefix(type: "feat", scope: nil, breaking: false)
+        #expect(CommitStyle.apply(feat, to: "Add CSV export") == "feat: Add CSV export")
+        #expect(CommitStyle.apply(feat, to: "fix: already prefixed") == "fix: already prefixed")
+        #expect(CommitStyle.apply(feat, to: "Feat: Add CSV export") == "feat: Add CSV export")
+        #expect(CommitStyle.apply(nil, to: "Add CSV export") == "Add CSV export")
+
+        let commits = [BranchCommit(hash: "aaaaaaa", subject: "feat(pr): earliest commit text", body: ""),
+                       BranchCommit(hash: "bbbbbbb", subject: "fix(pr): typo", body: "")]
+        let input = ClaudeCLI.input(head: "x", base: "main", commits: commits, diffStat: "", template: nil)
+        #expect(input.contains("start the title with \"feat(pr): \""))
+    }
+
+    @Test func pushRejectionAfterRewriteIsDetected() async throws {
+        let dir = try Fixture.makeRepo()
+        let bare = dir.deletingLastPathComponent().appendingPathComponent(dir.lastPathComponent + "-remote.git")
+        try Fixture.git(["init", "-q", "--bare", bare.path], in: dir)
+        try Fixture.git(["remote", "add", "origin", bare.path], in: dir)
+        try Fixture.git(["switch", "-q", "-c", "topic/push"], in: dir)
+        try Fixture.write(dir, "p.txt", "1\n")
+        try Fixture.git(["add", "p.txt"], in: dir)
+        try Fixture.git(["commit", "-q", "-m", "fix: first", "--", "p.txt"], in: dir)
+        let repo = try await Repository.open(dir)
+        await repo.refreshAll()
+
+        let first = await repo.pushForPullRequest(branch: "topic/push", remote: "origin", force: false)
+        #expect(first.ok, "\(first.errorMessage)")
+        #expect(repo.localBranch(named: "topic/push")?.upstream == "origin/topic/push")
+
+        // Rewrite the pushed commit (like a rebase or amend).
+        try Fixture.git(["commit", "-q", "--amend", "--only", "-m", "fix: first (amended)"], in: dir)
+        await repo.refreshAll()
+        let d = await repo.divergence(local: "topic/push", remoteRef: "refs/remotes/origin/topic/push")
+        #expect(d?.ahead == 1 && d?.behind == 1)
+
+        let rejected = await repo.pushForPullRequest(branch: "topic/push", remote: "origin", force: false)
+        #expect(!rejected.ok)
+        #expect(PushProblem.classify(rejected.stderr) == .diverged, "\(rejected.stderr)")
+        let rejected2 = await repo.pushResult(branch: "topic/push", force: false, reportErrors: false)
+        #expect(PushProblem.classify(rejected2.stderr) == .diverged, "\(rejected2.stderr)")
+
+        let forced = await repo.pushForPullRequest(branch: "topic/push", remote: "origin", force: true)
+        #expect(forced.ok, "\(forced.errorMessage)")
+        let after = await repo.divergence(local: "topic/push", remoteRef: "refs/remotes/origin/topic/push")
+        #expect(after?.ahead == 0 && after?.behind == 0)
+
+        // A lease against a stale remote-tracking ref is refused.
+        try Fixture.git(["update-ref", "refs/remotes/origin/topic/push", "main"], in: dir)
+        try Fixture.git(["commit", "-q", "--amend", "--only", "-m", "fix: first (again)"], in: dir)
+        let stale = await repo.pushForPullRequest(branch: "topic/push", remote: "origin", force: true)
+        #expect(!stale.ok)
+        #expect(PushProblem.classify(stale.stderr) == .staleLease, "\(stale.stderr)")
+        #expect(PushProblem.classify("fatal: unable to access 'https://github.com/x/y/': Could not resolve host") == .other)
+    }
+
+    @Test func existingPullRequestParsing() {
+        let json = """
+        [{"number": 42, "url": "https://github.com/acme/widgets/pull/42", "title": "feat: thing", "body": "Body",
+          "isDraft": true, "baseRefName": "master", "headRefName": "topic",
+          "reviewRequests": [{"__typename": "User", "login": "alice"},
+                             {"__typename": "Team", "name": "Core", "slug": "core", "organization": {"login": "acme"}},
+                             {"__typename": "Team", "name": "Web", "slug": "web"}]},
+         {"number": 7, "headRefName": "other"}]
+        """
+        let prs = GitHub.parsePullRequests(Data(json.utf8), head: "topic", owner: "acme")
+        #expect(prs.count == 1)
+        #expect(prs.first == GitHub.ExistingPullRequest(number: 42, url: "https://github.com/acme/widgets/pull/42",
+                                                       title: "feat: thing", body: "Body", isDraft: true, base: "master",
+                                                       reviewers: ["alice", "acme/core", "acme/web"]))
+        #expect(GitHub.parsePullRequests(Data("[]".utf8), head: "topic", owner: "acme").isEmpty)
+
+        #expect(GitHub.friendlyError("pull request create failed: GraphQL: No commits between main and topic (createPullRequest)",
+                                     head: "topic", base: "main").hasPrefix("topic has no commits"))
+        #expect(GitHub.friendlyError("a pull request for branch \"topic\" into branch \"main\" already exists:\nhttps://x",
+                                     head: "topic", base: "main").contains("already exists"))
+        #expect(GitHub.friendlyError("GraphQL: Head sha can't be blank, Head ref must be a branch (createPullRequest)",
+                                     head: "topic", base: "main").contains("isn’t on GitHub yet"))
+        #expect(GitHub.friendlyError("something else", head: "topic", base: "main") == "something else")
+    }
 }
 

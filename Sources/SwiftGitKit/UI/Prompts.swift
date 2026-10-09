@@ -99,6 +99,23 @@ enum Prompt {
         return box?.state == .on
     }
 
+    /// Alert with several buttons (the last one should be "Cancel"); returns the
+    /// index of the button pressed.
+    static func buttons(_ window: NSWindow?, title: String, message: String, buttons: [String],
+                        destructive: Int? = nil) async -> Int {
+        let alert = NSAlert()
+        alert.messageText = title
+        alert.informativeText = message
+        alert.alertStyle = .warning
+        for (i, b) in buttons.enumerated() {
+            let button = alert.addButton(withTitle: b)
+            if i == destructive { button.hasDestructiveAction = true }
+            if b == "Cancel" { button.keyEquivalent = "\u{1b}" }
+        }
+        let r = await run(alert, window)
+        return r.rawValue - NSApplication.ModalResponse.alertFirstButtonReturn.rawValue
+    }
+
     static func error(_ window: NSWindow?, title: String, message: String) async {
         let alert = NSAlert()
         alert.alertStyle = .warning

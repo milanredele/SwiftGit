@@ -662,9 +662,15 @@ final class Repository {
     /// Pushes `branch` (default: current). Sets the upstream when there is none.
     @discardableResult
     func push(branch: String? = nil, force: Bool = false) async -> Bool {
+        await pushResult(branch: branch, force: force, reportErrors: true).ok
+    }
+
+    /// Like `push`, but returns the git result; with `reportErrors: false` the
+    /// caller explains failures (see `PushProblem`).
+    func pushResult(branch: String? = nil, force: Bool = false, reportErrors: Bool) async -> RunResult {
         guard let name = branch ?? status.branch else {
             onError?("Push", "HEAD is detached. Check out a branch first.")
-            return false
+            return RunResult(status: -2, stdout: Data(), stderr: "detached")
         }
         let upstream = name == status.branch ? status.upstream : localBranch(named: name)?.upstream
         var args = ["push", "--progress"]
@@ -672,14 +678,40 @@ final class Repository {
         if upstream == nil {
             guard let remote = preferredRemote else {
                 onError?("Push", "This repository has no remote.")
-                return false
+                return RunResult(status: -2, stdout: Data(), stderr: "no remote")
             }
             args += ["--set-upstream", remote, name]
         } else if name != status.branch {
             let parts = upstream!.split(separator: "/", maxSplits: 1).map(String.init)
             if parts.count == 2 { args += [parts[0], "\(name):\(parts[1])"] }
         }
-        return await perform(force ? "Force push \(name)" : "Push \(name)", args).ok
+        return await perform(force ? "Force push \(name)" : "Push \(name)", args, reportErrors: reportErrors)
+    }
+
+    /// Pushes `branch` to the branch of the same name on `remote` (what a pull
+    /// request needs, whatever upstream is configured). Sets the upstream if
+    /// there is none. `force` uses --force-with-lease against remote/branch.
+    func pushForPullRequest(branch: String, remote: String, force: Bool) async -> RunResult {
+        var args = ["push", "--progress"]
+        if force { args.append("--force-with-lease=refs/heads/\(branch)") }
+        if localBranch(named: branch)?.upstream == nil { args.append("--set-upstream") }
+        args += [remote, "refs/heads/\(branch):refs/heads/\(branch)"]
+        return await perform(force ? "Force push \(branch)" : "Push \(branch)", args, reportErrors: false)
+    }
+
+    /// Commits only in `local` / only in `remoteRef` (nil if either can't be resolved).
+    func divergence(local: String, remoteRef: String) async -> (ahead: Int, behind: Int)? {
+        let r = await git.run(["rev-list", "--left-right", "--count", "refs/heads/\(local)...\(remoteRef)", "--"])
+        guard r.ok else { return nil }
+        let n = r.output.split(whereSeparator: { $0 == "\t" || $0 == " " || $0 == "\n" }).compactMap { Int($0) }
+        return n.count == 2 ? (n[0], n[1]) : nil
+    }
+
+    /// Fetches one branch from `remote` quietly (updates refs/remotes/remote/branch).
+    func fetchBranch(_ branch: String, remote: String) async -> Bool {
+        let r = await git.run(["fetch", "--quiet", remote, "+refs/heads/\(branch):refs/remotes/\(remote)/\(branch)"])
+        await refreshRefs()
+        return r.ok
     }
 
     func stash() async {

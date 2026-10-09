@@ -316,3 +316,75 @@ struct BranchCommit: Equatable {
         }
     }
 }
+
+/// Commit message conventions, e.g. Conventional Commits ("feat(ui): …").
+enum CommitStyle {
+    struct Prefix: Equatable {
+        var type: String
+        var scope: String?
+        var breaking: Bool
+        var text: String { type + (scope.map { "(\($0))" } ?? "") + (breaking ? "!" : "") + ":" }
+    }
+
+    private static let pattern = try! NSRegularExpression(pattern: #"^([a-z][a-z0-9-]*)(?:\(([^)\n]+)\))?(!)?:\s+\S"#)
+
+    /// The conventional-commit prefix of a subject line, if it has one.
+    static func prefix(of subject: String) -> Prefix? {
+        let ns = subject as NSString
+        guard let m = pattern.firstMatch(in: subject, range: NSRange(location: 0, length: ns.length)) else { return nil }
+        func group(_ i: Int) -> String? {
+            let r = m.range(at: i)
+            return r.location == NSNotFound ? nil : ns.substring(with: r)
+        }
+        guard let type = group(1) else { return nil }
+        return Prefix(type: type, scope: group(2), breaking: group(3) != nil)
+    }
+
+    /// Most significant first; anything else ranks after these.
+    static let typeOrder = ["feat", "fix", "perf", "refactor", "revert", "build", "ci", "docs", "style", "test", "chore"]
+
+    /// The prefix a pull request should use when (at least half of) the commits
+    /// use one: the most significant type, a scope only if all share it, and
+    /// "!" if any commit is breaking. nil when the commits don't follow it.
+    static func pullRequestPrefix(_ subjects: [String]) -> Prefix? {
+        let parsed = subjects.compactMap(prefix(of:))
+        guard !parsed.isEmpty, parsed.count * 2 >= subjects.count else { return nil }
+        let types = parsed.map(\.type)
+        let counts = Dictionary(types.map { ($0, 1) }, uniquingKeysWith: +)
+        let type = typeOrder.first(where: { counts[$0] != nil })
+            ?? counts.max { a, b in a.value < b.value || (a.value == b.value && a.key > b.key) }!.key
+        let scopes = Set(parsed.map { $0.scope ?? "" })
+        let scope = scopes.count == 1 ? parsed[0].scope : nil
+        return Prefix(type: type, scope: scope, breaking: parsed.contains { $0.breaking })
+    }
+
+    /// Puts `prefix` in front of `title` unless it already has one.
+    static func apply(_ prefix: Prefix?, to title: String) -> String {
+        guard let prefix, self.prefix(of: title) == nil else { return title }
+        var rest = title
+        // "Feat: x" / "[feat] x" style near-misses: replace rather than double up.
+        if let r = rest.range(of: #"^\[?[A-Za-z]+\]?:?\s+"#, options: .regularExpression),
+           rest[r].trimmingCharacters(in: CharacterSet(charactersIn: "[]: ")).lowercased() == prefix.type {
+            rest = String(rest[r.upperBound...])
+        }
+        return prefix.text + " " + rest
+    }
+}
+
+/// Why a push was refused, from git's stderr.
+enum PushProblem: Equatable {
+    /// The remote branch has commits the local one doesn't (rebased/amended
+    /// locally, or someone else pushed): needs a pull or a force push.
+    case diverged
+    /// --force-with-lease refused: the remote moved since the last fetch.
+    case staleLease
+    case other
+
+    static func classify(_ stderr: String) -> PushProblem {
+        let s = stderr.lowercased()
+        if s.contains("stale info") { return .staleLease }
+        if s.contains("non-fast-forward") || s.contains("fetch first") || s.contains("tip of your current branch is behind")
+            || (s.contains("[rejected]") && s.contains("updates were rejected")) { return .diverged }
+        return .other
+    }
+}

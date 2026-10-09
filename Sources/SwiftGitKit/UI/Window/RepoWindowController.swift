@@ -303,7 +303,54 @@ final class RepoWindowController: NSWindowController, NSWindowDelegate, NSToolba
     @objc func fetch(_ sender: Any?) { Task { await repository.fetch() } }
     @objc func pull(_ sender: Any?) { Task { await repository.pull() } }
     @objc func pullRebase(_ sender: Any?) { Task { await repository.pull(rebase: true) } }
-    @objc func push(_ sender: Any?) { Task { await repository.push() } }
+    @objc func push(_ sender: Any?) { pushExplainingRejection(branch: nil) }
+
+    /// Pushes; when git refuses because the remote branch has other commits
+    /// (typically after a rebase or amend), explains why and offers a force
+    /// push or a pull instead of showing git's raw error.
+    func pushExplainingRejection(branch: String?) {
+        Task {
+            guard let name = branch ?? repository.currentBranch else {
+                await repository.push()   // reports the detached-HEAD error
+                return
+            }
+            let r = await repository.pushResult(branch: name, force: false, reportErrors: false)
+            guard !r.ok, r.status != -2 else { return }
+            guard PushProblem.classify(r.stderr) == .diverged,
+                  let upstream = repository.localBranch(named: name)?.upstream,
+                  let slash = upstream.firstIndex(of: "/") else {
+                showError("Push \(name)", r.errorMessage)
+                return
+            }
+            // git push doesn't update the remote-tracking branch on rejection: fetch it to count.
+            let remote = String(upstream[..<slash]), remoteBranch = String(upstream[upstream.index(after: slash)...])
+            _ = await repository.fetchBranch(remoteBranch, remote: remote)
+            let d = await repository.divergence(local: name, remoteRef: "refs/remotes/\(upstream)")
+            let ahead = d?.ahead ?? 0, behind = d?.behind ?? 0
+            let isCurrent = name == repository.currentBranch
+            if ahead == 0 && behind > 0 {
+                let choice = await Prompt.buttons(window, title: "\(upstream) has \(Self.commits(behind)) you don’t have",
+                    message: "Your \(name) has nothing new to push." + (isCurrent ? " Pull to bring it up to date." : ""),
+                    buttons: isCurrent ? ["Pull", "Cancel"] : ["OK"])
+                if isCurrent && choice == 0 { await repository.pull() }
+                return
+            }
+            let message = """
+            Push was rejected because \(name) and \(upstream) have diverged: \(Self.commits(ahead)) only here, \(Self.commits(behind)) only on \(remote).
+
+            This is expected after a rebase or amend: the remote still has the old commits. Force push replaces \(upstream) with your version (with lease, so it is refused if the remote changes again in the meantime). Only do this if nobody else is working on the branch.
+
+            If someone else pushed to it, \(isCurrent ? "pull (rebase)" : "check out the branch and pull") instead.
+            """
+            let choice = await Prompt.buttons(window, title: "Push rejected: \(name) was rewritten", message: message,
+                                              buttons: isCurrent ? ["Force Push", "Pull (Rebase)", "Cancel"] : ["Force Push", "Cancel"],
+                                              destructive: 0)
+            if choice == 0 { await repository.push(branch: name, force: true) }
+            if choice == 1, isCurrent { await repository.pull(rebase: true) }
+        }
+    }
+
+    static func commits(_ n: Int) -> String { n == 1 ? "1 commit" : "\(n) commits" }
 
     @objc func forcePush(_ sender: Any?) {
         guard let branch = repository.currentBranch else { return }

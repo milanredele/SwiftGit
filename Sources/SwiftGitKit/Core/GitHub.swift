@@ -195,6 +195,98 @@ enum GitHub {
         var draft: Bool
     }
 
+    struct ExistingPullRequest: Equatable {
+        var number: Int
+        var url: String
+        var title: String
+        var body: String
+        var isDraft: Bool
+        var base: String
+        /// Requested reviewers in `--reviewer` form (login, or org/team-slug).
+        var reviewers: [String]
+    }
+
+    static let pullRequestFields = "number,url,title,body,isDraft,baseRefName,headRefName,reviewRequests"
+
+    /// Parses `gh pr list --json <pullRequestFields>`; keeps PRs whose head is `head`.
+    static func parsePullRequests(_ data: Data, head: String, owner: String) -> [ExistingPullRequest] {
+        guard let list = (try? JSONSerialization.jsonObject(with: data)) as? [[String: Any]] else { return [] }
+        return list.compactMap { pr in
+            guard let number = pr["number"] as? Int,
+                  (pr["headRefName"] as? String).map({ $0 == head }) ?? true else { return nil }
+            var reviewers: [String] = []
+            for r in pr["reviewRequests"] as? [[String: Any]] ?? [] {
+                if let login = r["login"] as? String, !login.isEmpty {
+                    reviewers.append(login)
+                } else if let slug = r["slug"] as? String, !slug.isEmpty {
+                    let org = (r["organization"] as? [String: Any])?["login"] as? String ?? owner
+                    reviewers.append(slug.contains("/") ? slug : "\(org)/\(slug)")
+                }
+            }
+            return ExistingPullRequest(number: number, url: pr["url"] as? String ?? "",
+                                       title: pr["title"] as? String ?? "", body: pr["body"] as? String ?? "",
+                                       isDraft: pr["isDraft"] as? Bool ?? false,
+                                       base: pr["baseRefName"] as? String ?? "", reviewers: reviewers)
+        }
+    }
+
+    /// The open pull request (draft or not) whose head is `branch`, if any.
+    static func openPullRequest(_ repo: GitHubRepo, head branch: String) async throws -> ExistingPullRequest? {
+        let r = await run(["pr", "list", "--repo", repo.slug, "--head", branch, "--state", "open",
+                           "--json", pullRequestFields, "--limit", "5"], cwd: nil)
+        guard r.ok else { throw GitHubError(message: r.errorMessage) }
+        return parsePullRequests(r.stdout, head: branch, owner: repo.owner).first
+    }
+
+    struct PullRequestUpdate {
+        var repo: GitHubRepo
+        var number: Int
+        var title: String
+        var body: String
+        var base: String?
+        var addReviewers: [String]
+        var removeReviewers: [String]
+        /// nil: leave as is.
+        var draft: Bool?
+    }
+
+    static func updatePullRequest(_ u: PullRequestUpdate, cwd: URL) async throws {
+        var args = ["pr", "edit", String(u.number), "--repo", u.repo.slug, "--title", u.title, "--body-file", "-"]
+        if let base = u.base { args += ["--base", base] }
+        if !u.addReviewers.isEmpty { args += ["--add-reviewer", u.addReviewers.joined(separator: ",")] }
+        if !u.removeReviewers.isEmpty { args += ["--remove-reviewer", u.removeReviewers.joined(separator: ",")] }
+        let r = await run(args, cwd: cwd, stdin: Data(u.body.utf8))
+        guard r.ok else { throw GitHubError(message: friendlyError(r.errorMessage, head: nil, base: u.base)) }
+        if let draft = u.draft {
+            let d = await run(["pr", "ready", String(u.number), "--repo", u.repo.slug] + (draft ? ["--undo"] : []), cwd: cwd)
+            guard d.ok else { throw GitHubError(message: d.errorMessage) }
+        }
+    }
+
+    /// Turns common `gh pr create/edit` failures into an explanation.
+    static func friendlyError(_ message: String, head: String?, base: String?) -> String {
+        let m = message.lowercased()
+        let h = head ?? "The branch", b = base ?? "the base branch"
+        if m.contains("already exists") {
+            return "A pull request for \(h) already exists.\n\n\(message)"
+        }
+        if m.contains("no commits between") {
+            return "\(h) has no commits that aren’t already on \(b), so there is nothing to review."
+        }
+        if m.contains("head sha can't be blank") || m.contains("head ref must be a branch")
+            || m.contains("must first push") || m.contains("head repository") && m.contains("not found") {
+            return "\(h) isn’t on GitHub yet. Tick “Push branch first” and try again."
+        }
+        if m.contains("could not resolve to a user") || m.contains("could not resolve to a team")
+            || m.contains("reviews may only be requested from collaborators") || m.contains("review cannot be requested from pull request author") {
+            return "Some reviewers couldn’t be requested (not collaborators of this repository, or the author).\n\n\(message)"
+        }
+        if m.contains("draft pull requests are not supported") {
+            return "This repository doesn’t support draft pull requests (private repos on GitHub Free). Untick “Create as draft”."
+        }
+        return message
+    }
+
     /// Returns the URL of the created pull request.
     static func createPullRequest(_ req: PullRequestRequest, cwd: URL) async throws -> String {
         var args = ["pr", "create", "--repo", req.repo.slug, "--base", req.base, "--head", req.head,
@@ -202,7 +294,7 @@ enum GitHub {
         if !req.reviewers.isEmpty { args += ["--reviewer", req.reviewers.joined(separator: ",")] }
         if req.draft { args.append("--draft") }
         let r = await run(args, cwd: cwd, stdin: Data(req.body.utf8))
-        guard r.ok else { throw GitHubError(message: r.errorMessage) }
+        guard r.ok else { throw GitHubError(message: friendlyError(r.errorMessage, head: req.head, base: req.base)) }
         let lines = r.output.split(separator: "\n").map { $0.trimmingCharacters(in: .whitespaces) }
         return lines.last(where: { $0.hasPrefix("https://") }) ?? r.output.trimmingCharacters(in: .whitespacesAndNewlines)
     }

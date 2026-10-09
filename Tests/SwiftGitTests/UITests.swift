@@ -238,5 +238,53 @@ struct UITests {
         }
         sheet.window?.close()
     }
+
+    @Test func pullRequestForRewrittenBranchOffersForcePush() async throws {
+        UI.setUpApp()
+        let dir = try Fixture.makeRepo()
+        try Fixture.git(["remote", "add", "origin", "https://github.com/acme/widgets.git"], in: dir)
+        try Fixture.git(["update-ref", "refs/remotes/origin/main", "main"], in: dir)
+        try Fixture.git(["switch", "-q", "-c", "topic/rebased"], in: dir)
+        try Fixture.write(dir, "r.txt", "1\n")
+        try Fixture.git(["add", "r.txt"], in: dir)
+        try Fixture.git(["commit", "-q", "-m", "feat: draft work", "--", "r.txt"], in: dir)
+        // "Pushed" earlier, then rewritten locally.
+        try Fixture.git(["update-ref", "refs/remotes/origin/topic/rebased", "HEAD"], in: dir)
+        try Fixture.git(["config", "branch.topic/rebased.remote", "origin"], in: dir)
+        try Fixture.git(["config", "branch.topic/rebased.merge", "refs/heads/topic/rebased"], in: dir)
+        try Fixture.git(["commit", "-q", "--amend", "--only", "-m", "feat: draft work (rebased)"], in: dir)
+        try Fixture.git(["switch", "-q", "main"], in: dir)
+        let repo = try await Repository.open(dir)
+        await repo.refreshAll()
+
+        let sheet = PullRequestSheet(repository: repo, head: "topic/rebased")
+        sheet.loadsGitHubData = false
+        sheet.load()
+        await UI.wait("defaults") { !sheet.testIsUpdating && !sheet.testTitle.isEmpty }
+        #expect(sheet.testPushTitle == "Force push branch first")
+        #expect(sheet.testPushOn)
+        #expect(sheet.testNote.contains("rewritten"), "\(sheet.testNote)")
+        #expect(sheet.testCreateTitle == "Create Pull Request")
+
+        // An already open draft PR switches the sheet to updating it.
+        let pr = GitHub.ExistingPullRequest(number: 42, url: "https://github.com/acme/widgets/pull/42",
+                                            title: "feat: the draft PR", body: "Existing description", isDraft: true,
+                                            base: "main", reviewers: ["alice"])
+        sheet.setExisting(pr)
+        #expect(sheet.testCreateTitle == "Update Pull Request")
+        #expect(sheet.testTitle == "feat: the draft PR")
+        #expect(sheet.testBody == "Existing description")
+        #expect(sheet.testSelectedReviewers == ["alice"])
+        #expect(sheet.testNote.contains("#42"))
+        if let w = sheet.window {
+            await UI.settle(w)
+            UI.snapshot(w, "pull-request-update")
+        }
+        sheet.setExisting(nil)
+        await UI.wait("defaults again") { !sheet.testIsUpdating }
+        #expect(sheet.testCreateTitle == "Create Pull Request")
+        #expect(sheet.testTitle == "feat: draft work (rebased)")
+        sheet.window?.close()
+    }
 }
 

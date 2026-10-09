@@ -32,6 +32,9 @@ enum ClaudeCLI {
     BODY:
     <a concise Markdown description: what changes and why, as a short paragraph and/or a bullet list>
 
+    Follow the conventions of the commit messages: if their subjects start with a prefix such as feat:, fix:,
+    chore: or fix(scope): (Conventional Commits), start the title the same way; reuse ticket keys, language,
+    capitalization and tone the commits use, and write the description in the style of the commit bodies.
     Base everything on the commits and the file list; do not invent details, ticket numbers or test results.
     If a pull request template is given, fill in its sections and keep its headings; leave checkboxes unticked.
     No preamble, no closing remarks, no code fences around the whole reply.
@@ -39,7 +42,11 @@ enum ClaudeCLI {
 
     /// The text sent on stdin: branch, commits (oldest first), changed files and template.
     static func input(head: String, base: String, commits: [BranchCommit], diffStat: String, template: String?) -> String {
-        var s = "Branch \(head) into \(base).\n\nCommits, oldest first:\n"
+        var s = "Branch \(head) into \(base).\n"
+        if let p = CommitStyle.pullRequestPrefix(commits.map(\.subject)) {
+            s += "The commits use Conventional Commits prefixes; start the title with \"\(p.text) \".\n"
+        }
+        s += "\nCommits, oldest first:\n"
         var budget = 24_000
         for c in commits {
             let entry = "\n---\n" + c.message + "\n"
@@ -130,9 +137,10 @@ enum ClaudeCLI {
             }
             throw GitHubError(message: "claude: " + message)
         }
-        guard let draft = parse(r.output) else {
+        guard var draft = parse(r.output) else {
             throw GitHubError(message: "claude returned no usable text.")
         }
+        draft.title = CommitStyle.apply(CommitStyle.pullRequestPrefix(commits.map(\.subject)), to: draft.title)
         return draft
     }
 }
