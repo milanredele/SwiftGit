@@ -59,6 +59,23 @@ struct UITests {
         window.close()
     }
 
+    @Test func selectingACommitHighlightsItsBranch() async throws {
+        let (repo, wc, window) = try await openWindow()
+        let history = try #require(wc.testRoot.main?.content.history)
+        let sidebar = try #require(wc.testRoot.main?.sidebar)
+        let featureTip = try #require(repo.localBranches.first { $0.name == "feature" }.flatMap { Hash20($0.target) })
+        history.select(hash: featureTip, scroll: true)
+        #expect(sidebar.testSelectedTitle == "feature")
+        let head = try #require(repo.headHash)
+        history.select(hash: head, scroll: true)
+        #expect(sidebar.testSelectedTitle == "main")
+        // A commit without branches clears the sidebar selection.
+        let plain = try #require(repo.graph.hashes.first { (repo.decorations[$0] ?? []).isEmpty })
+        history.select(hash: plain, scroll: true)
+        #expect(sidebar.testSelectedTitle == nil)
+        window.close()
+    }
+
     @Test func changesShowsFilesAndDiff() async throws {
         let (_, wc, window) = try await openWindow()
         wc.showChanges(nil)

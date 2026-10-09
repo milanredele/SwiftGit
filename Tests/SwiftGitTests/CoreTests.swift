@@ -131,6 +131,24 @@ struct CoreTests {
         #expect(subjects == ["merge", "b2", "c2", "b1", "c1"])
     }
 
+    @Test func deletionInfoCountsCommitsThatWouldBeLost() async throws {
+        let dir = try Fixture.makeRepo()
+        let wip = try Fixture.git(["commit-tree", "HEAD^{tree}", "-p", "HEAD", "-m", "WIP"], in: dir)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        try Fixture.git(["branch", "wip", wip], in: dir)
+        let repo = try await Repository.open(dir)
+        await repo.refreshAll()
+        let feature = try #require(repo.localBranches.first { $0.name == "feature" })
+        let featureInfo = await repo.deletionInfo(for: feature)
+        #expect(featureInfo.uniqueCommits == 0)
+        #expect(featureInfo.lastSubject == "Feature: notes")
+        #expect(featureInfo.mainBranch == "main")
+        let wipRef = try #require(repo.localBranches.first { $0.name == "wip" })
+        let wipInfo = await repo.deletionInfo(for: wipRef)
+        #expect(wipInfo.uniqueCommits == 1)
+        #expect(!wipRef.isMerged)
+    }
+
     @Test func sideBySideRows() async throws {
         let dir = try Fixture.makeRepo()
         let repo = try await Repository.open(dir)

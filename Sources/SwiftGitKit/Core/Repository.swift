@@ -286,6 +286,37 @@ final class Repository {
         return false
     }
 
+    struct BranchDeletionInfo {
+        var ref: RefInfo
+        /// Commits reachable only from this branch (not from any other branch,
+        /// remote branch or tag): these are what deleting it would drop.
+        var uniqueCommits: Int
+        var lastSubject: String
+        var lastDate: Date?
+        var mainBranch: String?
+        /// For remote branches: the local branch tracking it, if any.
+        var trackingLocal: String?
+    }
+
+    func deletionInfo(for ref: RefInfo) async -> BranchDeletionInfo {
+        // --exclude takes the short name and only applies to the next --branches/--remotes.
+        let others: [String] = ref.kind == .remote
+            ? ["--branches", "--tags", "--exclude=\(ref.name)", "--remotes"]
+            : ["--remotes", "--tags", "--exclude=\(ref.name)", "--branches"]
+        async let unique = git.run(["rev-list", "--count", ref.fullName, "--not"] + others)
+        async let last = git.run(["log", "-1", "--format=%s%x00%ct", ref.fullName])
+        let (u, l) = await (unique, last)
+        let parts = l.output.trimmingCharacters(in: .newlines).split(separator: "\0", omittingEmptySubsequences: false)
+        let tracking = ref.kind == .remote ? refs.first { $0.kind == .local && $0.upstream == ref.name }?.name : nil
+        return BranchDeletionInfo(
+            ref: ref,
+            uniqueCommits: Int(u.output.trimmingCharacters(in: .whitespacesAndNewlines)) ?? 0,
+            lastSubject: parts.first.map(String.init) ?? "",
+            lastDate: parts.count > 1 ? Double(parts[1]).map { Date(timeIntervalSince1970: $0) } : nil,
+            mainBranch: mainBranch,
+            trackingLocal: tracking)
+    }
+
     static let topoOrderKey = "history.topoOrder"
 
     func reloadGraph() async {

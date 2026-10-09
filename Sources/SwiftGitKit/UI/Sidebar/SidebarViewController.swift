@@ -247,6 +247,42 @@ final class SidebarViewController: NSViewController, NSOutlineViewDataSource, NS
         return v
     }
 
+    /// Selects the sidebar entry for one of `refs` without moving the history.
+    /// Keeps the current selection if it is already one of them.
+    func highlight(_ refs: [RefInfo]) {
+        let names = Set(refs.map(\.fullName))
+        if let current = outline.item(atRow: outline.selectedRow) as? SidebarNode,
+           let ref = current.ref, names.contains(ref.fullName) { return }
+        let preferred = refs.first { $0.kind == .local && $0.isHead }
+            ?? refs.first { $0.kind == .local }
+            ?? refs.first { $0.kind == .remote }
+            ?? refs.first
+        suppressSelection = true
+        defer { suppressSelection = false }
+        guard let preferred else { outline.deselectAll(nil); return }
+        // Expand the section / remote group that contains it.
+        for top in roots {
+            for child in top.children {
+                if child.ref?.fullName == preferred.fullName {
+                    outline.expandItem(top)
+                } else if child.children.contains(where: { $0.ref?.fullName == preferred.fullName }) {
+                    outline.expandItem(top)
+                    outline.expandItem(child)
+                }
+            }
+        }
+        for row in 0..<outline.numberOfRows {
+            if let n = outline.item(atRow: row) as? SidebarNode, n.ref?.fullName == preferred.fullName {
+                outline.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false)
+                outline.scrollRowToVisible(row)
+                return
+            }
+        }
+        outline.deselectAll(nil)
+    }
+
+    var testSelectedTitle: String? { (outline.item(atRow: outline.selectedRow) as? SidebarNode)?.title }
+
     func outlineViewSelectionDidChange(_ notification: Notification) {
         guard !suppressSelection, let n = outline.item(atRow: outline.selectedRow) as? SidebarNode else { return }
         let target = n.ref?.target ?? n.stash?.hash

@@ -230,6 +230,7 @@ final class HistoryViewController: NSViewController, NSTableViewDataSource, NSTa
         }
         let hash = repository.graph.hashes[row]
         state.selectedCommit = hash
+        actions?.highlightBranch(of: repository.decorations[hash] ?? [])
         selectTask?.cancel()
         selectTask = Task { [weak self] in
             try? await Task.sleep(nanoseconds: 50_000_000)
@@ -284,6 +285,14 @@ final class HistoryViewController: NSViewController, NSTableViewDataSource, NSTa
         }
         reset.submenu = sub
         menu.addItem(reset)
+        let deletable = refs.filter { ($0.kind == .local && !$0.isHead && $0.name != "HEAD") || $0.kind == .remote }
+        if !deletable.isEmpty {
+            menu.addItem(.separator())
+            for ref in deletable {
+                add(ref.kind == .local ? "Delete Branch \(ref.name)…" : "Delete \(ref.name) on Remote…",
+                    #selector(deleteRef(_:)), ref.fullName)
+            }
+        }
         menu.addItem(.separator())
         add("Copy Commit Hash", #selector(copyHash(_:)))
         add("Copy Subject", #selector(copySubject(_:)), row)
@@ -331,6 +340,12 @@ final class HistoryViewController: NSViewController, NSTableViewDataSource, NSTa
     @objc private func resetHere(_ item: NSMenuItem) {
         guard let pair = item.representedObject as? [String], pair.count == 2 else { return }
         actions?.confirmReset(to: pair[0], mode: pair[1])
+    }
+
+    @objc private func deleteRef(_ item: NSMenuItem) {
+        guard let full = item.representedObject as? String,
+              let ref = repository.refs.first(where: { $0.fullName == full }) else { return }
+        actions?.confirmDelete(ref)
     }
 
     @objc private func copyHash(_ item: NSMenuItem) {

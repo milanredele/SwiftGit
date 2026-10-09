@@ -77,6 +77,28 @@ enum Prompt {
         return await run(alert, window) == .alertFirstButtonReturn
     }
 
+    /// Confirmation with an optional checkbox; returns nil when cancelled.
+    static func confirm(_ window: NSWindow?, title: String, message: String, ok: String, destructive: Bool,
+                        option: String?, optionOn: Bool = false) async -> Bool? {
+        let alert = NSAlert()
+        alert.messageText = title
+        alert.informativeText = message
+        alert.alertStyle = destructive ? .critical : .warning
+        let okButton = alert.addButton(withTitle: ok)
+        if destructive { okButton.hasDestructiveAction = true }
+        alert.addButton(withTitle: "Cancel")
+        var box: NSButton?
+        if let option {
+            let b = NSButton(checkboxWithTitle: option, target: nil, action: nil)
+            b.state = optionOn ? .on : .off
+            b.sizeToFit()
+            alert.accessoryView = b
+            box = b
+        }
+        guard await run(alert, window) == .alertFirstButtonReturn else { return nil }
+        return box?.state == .on
+    }
+
     static func error(_ window: NSWindow?, title: String, message: String) async {
         let alert = NSAlert()
         alert.alertStyle = .warning

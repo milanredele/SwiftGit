@@ -435,31 +435,85 @@ final class RepoWindowController: NSWindowController, NSWindowDelegate, NSToolba
         }
     }
 
+    /// Explains what deleting a branch means for this particular branch before doing it.
     func confirmDelete(_ ref: RefInfo) {
+        guard ref.kind == .local else { confirmDeleteRemote(ref); return }
+        guard !ref.isHead else {
+            showError("Delete \(ref.name)", "\(ref.name) is the checked-out branch. Check out another branch first.")
+            return
+        }
         Task {
-            guard await Prompt.confirm(window, title: "Delete branch \(ref.name)?", message: "The local branch will be deleted.",
-                                       ok: "Delete", destructive: true) else { return }
-            let r = await repository.deleteBranch(ref.name, force: false)
-            if !r.ok, r.status != -2 {
-                if r.errorMessage.contains("not fully merged") {
-                    guard await Prompt.confirm(window, title: "\(ref.name) is not fully merged",
-                                               message: "Deleting it may lose commits. Delete anyway?", ok: "Force Delete",
-                                               destructive: true) else { return }
-                    await repository.deleteBranch(ref.name, force: true)
+            let info = await repository.deletionInfo(for: ref)
+            var lines: [String] = []
+            let main = info.mainBranch ?? "the main branch"
+            if ref.isMerged {
+                lines.append(ref.mergedByContent
+                             ? "✓ Squash- or rebase-merged into \(main): its changes are already there."
+                             : "✓ Fully merged into \(main).")
+            } else {
+                lines.append("✗ Not merged into \(main).")
+            }
+            if let upstream = ref.upstream {
+                if ref.upstreamGone {
+                    lines.append("✓ Its remote branch \(upstream) was already deleted (usually after the PR was merged).")
+                } else if ref.ahead > 0 {
+                    lines.append("⚠︎ \(ref.ahead) commit\(ref.ahead == 1 ? "" : "s") not pushed to \(upstream).")
                 } else {
-                    showError("Delete \(ref.name)", r.errorMessage)
+                    lines.append("✓ Pushed: \(upstream) has all its commits\(ref.behind > 0 ? " (and \(ref.behind) more)" : "").")
                 }
+            } else {
+                lines.append("⚠︎ Never pushed: no remote branch.")
+            }
+            if !info.lastSubject.isEmpty {
+                let when = info.lastDate.map { relativeDateFormatter.string(from: $0) } ?? ""
+                lines.append("Last commit: “\(info.lastSubject)” \(when)")
+            }
+            let losing = info.uniqueCommits > 0 && !ref.isMerged
+            if losing {
+                lines.append("")
+                lines.append("⚠︎ \(info.uniqueCommits) commit\(info.uniqueCommits == 1 ? " exists" : "s exist") only on this branch and will no longer be reachable. Git keeps them for a while (git reflog), but they will eventually be removed.")
+            } else {
+                lines.append("")
+                lines.append("No work will be lost: every commit is also on another branch, a remote branch or in \(main).")
+            }
+            let remoteOption: String? = (ref.upstream != nil && !ref.upstreamGone) ? "Also delete \(ref.upstream!) on the remote" : nil
+            guard let alsoRemote = await Prompt.confirm(window, title: "Delete branch “\(ref.name)”?",
+                                                        message: lines.joined(separator: "\n"),
+                                                        ok: losing ? "Delete and Lose Commits" : "Delete",
+                                                        destructive: losing, option: remoteOption) else { return }
+            // The user has seen the consequences, so force (-D) to also cover squash merges.
+            let r = await repository.deleteBranch(ref.name, force: true)
+            guard r.ok else { return }
+            if alsoRemote, let upstream = ref.upstream,
+               let remoteRef = repository.remoteBranches.first(where: { $0.name == upstream }) {
+                await repository.deleteRemoteBranch(remoteRef)
             }
         }
     }
 
     func confirmDeleteRemote(_ ref: RefInfo) {
         Task {
-            guard await Prompt.confirm(window, title: "Delete \(ref.name) on the remote?",
-                                       message: "This removes the branch from \(ref.remoteName ?? "the remote") for everyone.",
-                                       ok: "Delete", destructive: true) else { return }
+            let info = await repository.deletionInfo(for: ref)
+            let remote = ref.remoteName ?? "the remote"
+            var lines = ["This removes \(ref.remoteBranch ?? ref.name) from \(remote) for everyone who uses it."]
+            if let local = info.trackingLocal {
+                lines.append("Your local branch \(local) is kept; it will show as “remote deleted”.")
+            }
+            if info.uniqueCommits > 0 {
+                lines.append("⚠︎ \(info.uniqueCommits) commit\(info.uniqueCommits == 1 ? " is" : "s are") on no other branch or tag and will be lost from \(remote).")
+            } else {
+                lines.append("No work will be lost: every commit is also on another branch or tag.")
+            }
+            guard await Prompt.confirm(window, title: "Delete “\(ref.name)” on \(remote)?",
+                                       message: lines.joined(separator: "\n"),
+                                       ok: "Delete on Remote", destructive: true) else { return }
             await repository.deleteRemoteBranch(ref)
         }
+    }
+
+    /// Highlights the branch(es) of the commit selected in the history.
+    func highlightBranch(of refs: [RefInfo]) {
+        root.main?.sidebar.highlight(refs.filter { $0.name != "HEAD" })
     }
 
     func confirmMerge(_ target: String) {
