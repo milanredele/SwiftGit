@@ -265,6 +265,47 @@ struct CoreTests {
         #expect(new == [NSRange(location: 16, length: 1)])
     }
 
+    @Test func gitHubAuthStatusParsing() {
+        let multi = """
+        github.com
+          ✓ Logged in to github.com account milanredele (keyring)
+          - Active account: true
+          - Git operations protocol: https
+          - Token: gho_************************************
+          - Token scopes: 'gist', 'read:org', 'repo', 'workflow'
+
+          ✓ Logged in to github.com account mredele (keyring)
+          - Active account: false
+          - Git operations protocol: https
+
+        ghe.example.com
+          X Failed to log in to ghe.example.com account worker (keyring)
+          - Active account: true
+        """
+        let accounts = GitHub.parseAuthStatus(multi)
+        #expect(accounts.map(\.login) == ["milanredele", "mredele", "worker"])
+        #expect(accounts.map(\.isActive) == [true, false, true])
+        #expect(accounts.map(\.isValid) == [true, true, false])
+        #expect(accounts[2].host == "ghe.example.com")
+
+        let old = """
+        github.com
+          ✓ Logged in to github.com as octocat (oauth_token)
+          ✓ Git operations for github.com configured to use https protocol.
+        """
+        let single = GitHub.parseAuthStatus(old)
+        #expect(single.count == 1)
+        #expect(single.first?.login == "octocat")
+        #expect(single.first?.isActive == true)
+        #expect(GitHub.parseAuthStatus("You are not logged into any GitHub hosts.").isEmpty)
+    }
+
+    /// Runs against the real gh on this machine (no assertions on accounts).
+    @Test func gitHubAccountsFromInstalledGh() async {
+        let accounts = await GitHub.accounts()
+        print("DIAG gh accounts:", accounts.map { "\($0.login)@\($0.host) active=\($0.isActive) valid=\($0.isValid)" })
+    }
+
     @Test func gitHubRemoteParsing() {
         #expect(GitHubRepo.parse(remoteURL: "git@github.com:acme/widgets.git") == GitHubRepo(owner: "acme", name: "widgets"))
         #expect(GitHubRepo.parse(remoteURL: "https://github.com/acme/widgets") == GitHubRepo(owner: "acme", name: "widgets"))

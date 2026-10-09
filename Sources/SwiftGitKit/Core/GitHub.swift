@@ -54,6 +54,49 @@ enum GitHub {
         return (try? JSONSerialization.jsonObject(with: r.stdout)) as? [String: Any]
     }
 
+    struct Account: Equatable {
+        var host: String
+        var login: String
+        var isActive: Bool
+        /// false when gh reports the stored token as invalid.
+        var isValid: Bool
+    }
+
+    /// Parses `gh auth status` (gh ≥ 2.40 lists every account per host).
+    static func parseAuthStatus(_ text: String) -> [Account] {
+        var accounts: [Account] = []
+        for raw in text.split(separator: "\n", omittingEmptySubsequences: false) {
+            let line = raw.trimmingCharacters(in: .whitespaces)
+            for (marker, valid) in [("Logged in to ", true), ("Failed to log in to ", false)] {
+                guard let r = line.range(of: marker) else { continue }
+                let words = line[r.upperBound...].split(separator: " ")
+                // "<host> account <login> (...)" or older "<host> as <login> (...)"
+                guard words.count >= 3, words[1] == "account" || words[1] == "as" else { continue }
+                accounts.append(Account(host: String(words[0]), login: String(words[2]), isActive: false, isValid: valid))
+            }
+            if line.hasPrefix("- Active account:"), !accounts.isEmpty {
+                accounts[accounts.count - 1].isActive = line.hasSuffix("true")
+            }
+        }
+        // Older gh versions have one account per host and no "Active account" line.
+        let hosts = Set(accounts.map(\.host))
+        for h in hosts where !accounts.contains(where: { $0.host == h && $0.isActive }) {
+            if let i = accounts.firstIndex(where: { $0.host == h }) { accounts[i].isActive = true }
+        }
+        return accounts
+    }
+
+    static func accounts() async -> [Account] {
+        guard executable != nil else { return [] }
+        let r = await run(["auth", "status"], cwd: nil)
+        return parseAuthStatus(r.output + "\n" + r.stderr)
+    }
+
+    static func switchAccount(_ account: Account) async throws {
+        let r = await run(["auth", "switch", "--hostname", account.host, "--user", account.login], cwd: nil)
+        guard r.ok else { throw GitHubError(message: r.errorMessage) }
+    }
+
     static func viewerLogin() async -> String? {
         let r = await run(["api", "user", "--jq", ".login"], cwd: nil)
         let s = r.output.trimmingCharacters(in: .whitespacesAndNewlines)

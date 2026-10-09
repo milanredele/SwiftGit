@@ -11,6 +11,7 @@ private extension NSToolbarItem.Identifier {
     static let pop = Self("pop")
     static let pullRequest = Self("pullRequest")
     static let mode = Self("mode")
+    static let account = Self("githubAccount")
 }
 
 /// One repository tab: window, toolbar, actions and background unloading.
@@ -47,7 +48,7 @@ final class RepoWindowController: NSWindowController, NSWindowDelegate, NSToolba
         if !window.setFrameUsingName("SwiftGitRepositoryWindow") { window.center() }
         window.setFrameAutosaveName("SwiftGitRepositoryWindow")
 
-        let toolbar = NSToolbar(identifier: "SwiftGitToolbar")
+        let toolbar = NSToolbar(identifier: "SwiftGitToolbar2")
         toolbar.delegate = self
         toolbar.displayMode = .iconAndLabel
         toolbar.allowsUserCustomization = true
@@ -82,6 +83,10 @@ final class RepoWindowController: NSWindowController, NSWindowDelegate, NSToolba
     var testRoot: RootViewController { root }
 
     // MARK: Window
+
+    func windowDidBecomeKey(_ notification: Notification) {
+        GitHubAccounts.shared.refresh()
+    }
 
     func windowWillClose(_ notification: Notification) {
         unloadTask?.cancel()
@@ -205,7 +210,7 @@ final class RepoWindowController: NSWindowController, NSWindowDelegate, NSToolba
     ]
 
     func toolbarDefaultItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
-        [.toggleSidebar, .fetch, .pull, .push, .space, .branch, .merge, .rebase, .space, .stash, .pop, .space, .pullRequest, .flexibleSpace, .mode]
+        [.toggleSidebar, .fetch, .pull, .push, .space, .branch, .merge, .rebase, .space, .stash, .pop, .space, .pullRequest, .flexibleSpace, .account, .mode]
     }
 
     func toolbarAllowedItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
@@ -214,6 +219,11 @@ final class RepoWindowController: NSWindowController, NSWindowDelegate, NSToolba
 
     func toolbar(_ toolbar: NSToolbar, itemForItemIdentifier id: NSToolbarItem.Identifier,
                  willBeInsertedIntoToolbar flag: Bool) -> NSToolbarItem? {
+        if id == .account {
+            let item = GitHubAccountToolbarItem(identifier: id)
+            toolbarItems[id] = item
+            return item
+        }
         if id == .mode {
             let item = NSToolbarItem(itemIdentifier: id)
             item.view = modeControl
