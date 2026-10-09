@@ -196,4 +196,47 @@ struct UITests {
         #expect(bytes < 5_000_000)
         window.close()
     }
+
+    @Test func pullRequestDefaultsToEarliestCommit() async throws {
+        UI.setUpApp()
+        let dir = try Fixture.makeRepo()
+        try Fixture.git(["remote", "add", "origin", "https://github.com/acme/widgets.git"], in: dir)
+        try Fixture.git(["update-ref", "refs/remotes/origin/main", "main"], in: dir)
+        try Fixture.git(["switch", "-q", "-c", "topic/pr"], in: dir)
+        try Fixture.write(dir, "one.txt", "1\n")
+        try Fixture.git(["add", "one.txt"], in: dir)
+        try Fixture.git(["commit", "-q", "-m", "First change", "-m", "Why it matters.", "--", "one.txt"], in: dir)
+        try Fixture.write(dir, "two.txt", "2\n")
+        try Fixture.git(["add", "two.txt"], in: dir)
+        try Fixture.git(["commit", "-q", "-m", "Second change", "--", "two.txt"], in: dir)
+        try Fixture.git(["switch", "-q", "main"], in: dir)
+        let repo = try await Repository.open(dir)
+        await repo.refreshAll()
+        #expect(repo.gitHubRemote?.repo == GitHubRepo(owner: "acme", name: "widgets"))
+
+        let sheet = PullRequestSheet(repository: repo, head: "topic/pr")
+        sheet.loadsGitHubData = false
+        sheet.load()
+        await UI.wait("default title") { !sheet.testIsUpdating && !sheet.testTitle.isEmpty }
+        #expect(sheet.testTitle == "First change")
+        #expect(sheet.testBody == "Why it matters.")
+
+        // Switching branches replaces untouched defaults…
+        sheet.testSelect(head: "feature")
+        await UI.wait("feature defaults") { !sheet.testIsUpdating }
+        #expect(sheet.testTitle == "Feature: notes")  // merged branch: falls back to its last commit
+        // …but not a title the user typed.
+        sheet.testSetTitle("My own title")
+        sheet.testSelect(head: "topic/pr")
+        await UI.wait("topic defaults") { !sheet.testIsUpdating }
+        #expect(sheet.testTitle == "My own title")
+        #expect(sheet.testBody == "Why it matters.")
+        if let w = sheet.window {
+            w.setContentSize(NSSize(width: 620, height: 640))
+            await UI.settle(w)
+            UI.snapshot(w, "pull-request")
+        }
+        sheet.window?.close()
+    }
 }
+

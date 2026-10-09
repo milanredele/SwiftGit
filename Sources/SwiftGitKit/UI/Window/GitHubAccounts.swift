@@ -10,6 +10,10 @@ final class GitHubAccounts {
     private(set) var loaded = false
     private var avatars: [String: NSImage] = [:]
     private var refreshTask: Task<Void, Never>?
+    /// github.com login → organization logins (cached; refetched every 10 minutes at most).
+    private var orgs: [String: [String]] = [:]
+    private var orgsLoadedAt: [String: Date] = [:]
+    private var orgTask: Task<Void, Never>?
 
     var active: GitHub.Account? {
         accounts.first { $0.host == "github.com" && $0.isActive } ?? accounts.first { $0.isActive }
@@ -21,10 +25,32 @@ final class GitHubAccounts {
             let list = await GitHub.accounts()
             refreshTask = nil
             loaded = true
-            guard list != accounts else { return }
-            accounts = list
+            if list != accounts {
+                accounts = list
+                NotificationCenter.default.post(name: GitHubAccounts.changed, object: nil)
+                for a in list where a.host == "github.com" { loadAvatar(a.login) }
+            }
+            loadOrganizations()
+        }
+    }
+
+    /// Organizations of a github.com account (known only for accounts that were active).
+    func organizations(of login: String) -> [String] { orgs[login] ?? [] }
+
+    private func loadOrganizations(force: Bool = false) {
+        guard orgTask == nil, let account = active, account.host == "github.com", account.isValid else { return }
+        let login = account.login
+        if !force, let at = orgsLoadedAt[login], Date().timeIntervalSince(at) < 600 { return }
+        orgTask = Task {
+            let list = await GitHub.organizations()
+            orgTask = nil
+            // gh answers for whichever account is active; drop the result if it changed meanwhile.
+            guard let list, active?.login == login else { return }
+            orgsLoadedAt[login] = Date()
+            guard orgs[login] != list else { return }
+            orgs[login] = list
             NotificationCenter.default.post(name: GitHubAccounts.changed, object: nil)
-            for a in list where a.host == "github.com" { loadAvatar(a.login) }
+            for o in list { loadAvatar(o) }
         }
     }
 
@@ -37,6 +63,7 @@ final class GitHubAccounts {
         }
         NotificationCenter.default.post(name: GitHubAccounts.changed, object: nil)
         refresh()
+        loadOrganizations(force: true)
     }
 
     func avatar(_ login: String) -> NSImage? { avatars[login] }
@@ -64,7 +91,11 @@ final class GitHubAccounts {
 /// Toolbar item: active gh account; its menu switches between accounts.
 @MainActor
 final class GitHubAccountToolbarItem: NSMenuToolbarItem {
-    init(identifier: NSToolbarItem.Identifier) {
+    /// The window's repository; its GitHub owner decides which organization is shown.
+    weak var repository: Repository?
+
+    init(identifier: NSToolbarItem.Identifier, repository: Repository? = nil) {
+        self.repository = repository
         super.init(itemIdentifier: identifier)
         label = "GitHub"
         paletteLabel = "GitHub Account"
@@ -77,13 +108,26 @@ final class GitHubAccountToolbarItem: NSMenuToolbarItem {
 
     @objc private func accountsChanged(_ n: Notification) { update() }
 
+    private var shownOwner: String?
+
+    /// Called when the repository's refs/remotes changed; rebuilds only if the GitHub owner did.
+    func repositoryChanged() {
+        if repository?.gitHubRemote?.repo.owner != shownOwner { update() }
+    }
+
     func update() {
         let model = GitHubAccounts.shared
         let menu = NSMenu()
+        shownOwner = repository?.gitHubRemote?.repo.owner
         if let active = model.active {
-            title = active.login
+            let orgs = model.organizations(of: active.login)
+            let repoOrg = GitHubAccountToolbarItem.repositoryOrganization(owner: repository?.gitHubRemote?.repo.owner, orgs: orgs)
+            title = repoOrg.map { "\(active.login) · \($0)" } ?? active.login
             image = model.avatar(active.login) ?? Theme.symbol("person.crop.circle", "GitHub account")
-            toolTip = "GitHub account used by gh for pull requests: \(active.login) on \(active.host)"
+            var tip = "GitHub account used by gh for pull requests: \(active.login) on \(active.host)"
+            if !orgs.isEmpty { tip += "\nMember of: " + orgs.joined(separator: ", ") }
+            if let repoOrg { tip += "\nThis repository belongs to \(repoOrg)." }
+            toolTip = tip
         } else {
             title = model.loaded ? "Not logged in" : "GitHub"
             image = Theme.symbol("person.crop.circle.badge.questionmark", "GitHub account")
@@ -103,6 +147,24 @@ final class GitHubAccountToolbarItem: NSMenuToolbarItem {
                 menu.addItem(item)
             }
         }
+        if let active = model.active {
+            let orgs = model.organizations(of: active.login)
+            let owner = repository?.gitHubRemote?.repo.owner
+            if !orgs.isEmpty {
+                menu.addItem(.separator())
+                menu.addItem(NSMenuItem.sectionHeader(title: "\(active.login)’s organizations"))
+                for org in orgs {
+                    let isOwner = owner?.caseInsensitiveCompare(org) == .orderedSame
+                    let item = NSMenuItem(title: org + (isOwner ? " (this repository)" : ""),
+                                          action: #selector(openOrganization(_:)), keyEquivalent: "")
+                    item.target = self
+                    item.representedObject = org
+                    item.image = model.avatar(org)
+                    item.toolTip = "Open github.com/\(org)"
+                    menu.addItem(item)
+                }
+            }
+        }
         if model.accounts.isEmpty {
             let item = NSMenuItem(title: "Not logged in — run `gh auth login`", action: nil, keyEquivalent: "")
             item.isEnabled = false
@@ -119,6 +181,17 @@ final class GitHubAccountToolbarItem: NSMenuToolbarItem {
     }
 
     @objc private func refreshAccounts(_ sender: Any?) { GitHubAccounts.shared.refresh() }
+
+    @objc private func openOrganization(_ item: NSMenuItem) {
+        guard let org = item.representedObject as? String, let url = URL(string: "https://github.com/\(org)") else { return }
+        NSWorkspace.shared.open(url)
+    }
+
+    /// The organization (spelled as GitHub returns it) that owns the repository, if the user is a member.
+    nonisolated static func repositoryOrganization(owner: String?, orgs: [String]) -> String? {
+        guard let owner else { return nil }
+        return orgs.first { $0.caseInsensitiveCompare(owner) == .orderedSame }
+    }
 
     @objc private func choose(_ item: NSMenuItem) {
         guard let key = item.representedObject as? String,

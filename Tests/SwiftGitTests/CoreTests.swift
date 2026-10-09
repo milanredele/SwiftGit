@@ -312,4 +312,86 @@ struct CoreTests {
         #expect(GitHubRepo.parse(remoteURL: "ssh://git@github.com/acme/widgets.git/") == GitHubRepo(owner: "acme", name: "widgets"))
         #expect(GitHubRepo.parse(remoteURL: "git@gitlab.com:acme/widgets.git") == nil)
     }
+
+    @Test func repositoryOrganizationMatchesOwner() {
+        let orgs = ["Acme-Corp", "tools"]
+        #expect(GitHubAccountToolbarItem.repositoryOrganization(owner: "acme-corp", orgs: orgs) == "Acme-Corp")
+        #expect(GitHubAccountToolbarItem.repositoryOrganization(owner: "someone", orgs: orgs) == nil)
+        #expect(GitHubAccountToolbarItem.repositoryOrganization(owner: nil, orgs: orgs) == nil)
+        #expect(GitHub.parseLines("acme\n tools \n\n") == ["acme", "tools"])
+    }
+
+    /// Runs against the real gh on this machine (no assertions on the result).
+    @Test func organizationsFromInstalledGh() async {
+        let orgs = await GitHub.organizations()
+        print("DIAG gh orgs:", orgs.map { $0.joined(separator: ", ") } ?? "request failed")
+    }
+
+    @Test func branchCommitsAreOldestFirst() async throws {
+        let dir = try Fixture.makeRepo()
+        try Fixture.git(["switch", "-q", "-c", "topic/pr"], in: dir)
+        try Fixture.write(dir, "one.txt", "1\n")
+        try Fixture.git(["add", "one.txt"], in: dir)
+        try Fixture.git(["commit", "-q", "-m", "First change", "-m", "Why it matters.\n\nMore detail.", "--", "one.txt"], in: dir)
+        try Fixture.write(dir, "two.txt", "2\n")
+        try Fixture.git(["add", "two.txt"], in: dir)
+        try Fixture.git(["commit", "-q", "-m", "Second change", "--", "two.txt"], in: dir)
+        let repo = try await Repository.open(dir)
+
+        let found = try #require(await repo.branchCommits(head: "topic/pr", bases: ["refs/remotes/origin/main", "refs/heads/main"]))
+        #expect(found.base == "refs/heads/main")
+        #expect(found.commits.map(\.subject) == ["First change", "Second change"])
+        #expect(found.commits[0].body == "Why it matters.\n\nMore detail.")
+        #expect(found.commits[0].message == "First change\n\nWhy it matters.\n\nMore detail.")
+        #expect(found.commits[1].body == "")
+        #expect(await repo.branchCommits(head: "topic/pr", bases: ["refs/heads/nope"]) == nil)
+        let stat = await repo.diffStat(base: found.base, head: "topic/pr")
+        #expect(stat.contains("one.txt") && stat.contains("two.txt"))
+    }
+
+    @Test func claudeReplyParsing() {
+        let reply = """
+        TITLE: Add CSV export to reports
+        BODY:
+        Adds a **CSV** export.
+
+        - New button
+        - Tests
+        """
+        #expect(ClaudeCLI.parse(reply) == ClaudeCLI.Draft(title: "Add CSV export to reports",
+                                                          body: "Adds a **CSV** export.\n\n- New button\n- Tests"))
+        let fenced = "```\nTitle: Fix crash\nBody: One line body.\n```"
+        #expect(ClaudeCLI.parse(fenced) == ClaudeCLI.Draft(title: "Fix crash", body: "One line body."))
+        let plain = "**Fix login redirect**\n\nRedirects back after login."
+        #expect(ClaudeCLI.parse(plain) == ClaudeCLI.Draft(title: "Fix login redirect", body: "Redirects back after login."))
+        #expect(ClaudeCLI.parse("   ") == nil)
+
+        let commits = [BranchCommit(hash: "aaaaaaa", subject: "First", body: "Because."),
+                       BranchCommit(hash: "bbbbbbb", subject: "Second", body: "")]
+        let input = ClaudeCLI.input(head: "topic", base: "main", commits: commits, diffStat: " a.txt | 2 +-", template: "## Summary\n")
+        #expect(input.contains("Branch topic into main."))
+        #expect(input.range(of: "First\n\nBecause.")!.lowerBound < input.range(of: "Second")!.lowerBound)
+        #expect(input.contains("Changed files:\n a.txt | 2 +-"))
+        #expect(input.contains("Pull request template:\n## Summary"))
+        #expect(ClaudeCLI.arguments(minimal: false).contains("--model"))
+    }
+
+    /// Checks the claude CLI on this machine accepts our flags. Only runs a real
+    /// (tiny, Haiku) request when .dev/claude-live-test exists.
+    @Test func claudeCLIOnThisMachine() async throws {
+        guard let exe = ClaudeCLI.executable else { print("DIAG claude: not installed"); return }
+        let v = await ProcessRunner.run(executable: exe, arguments: ["--version"], cwd: nil)
+        print("DIAG claude:", exe, v.output.trimmingCharacters(in: .whitespacesAndNewlines))
+        let marker = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
+            .deletingLastPathComponent().appendingPathComponent(".dev/claude-live-test")
+        guard FileManager.default.fileExists(atPath: marker.path) else { return }
+        let commits = [BranchCommit(hash: "aaaaaaa", subject: "Add a greeting to the README", body: "New users asked how to start."),
+                       BranchCommit(hash: "bbbbbbb", subject: "Fix typo in greeting", body: "")]
+        let started = Date()
+        let draft = try await ClaudeCLI.generatePullRequest(head: "readme-greeting", base: "main", commits: commits,
+                                                            diffStat: " README.md | 4 ++++", template: nil, cancel: CancelToken())
+        print("DIAG claude draft (\(Int(Date().timeIntervalSince(started)))s):", draft.title, "|", draft.body)
+        #expect(!draft.title.isEmpty)
+    }
 }
+

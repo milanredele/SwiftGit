@@ -127,6 +127,7 @@ final class RepoWindowController: NSWindowController, NSWindowDelegate, NSToolba
             updateBanner()
         case .refs:
             updateTitles()
+            (toolbarItems[.account] as? GitHubAccountToolbarItem)?.repositoryChanged()
         case .activity:
             updateActivity()
         default:
@@ -220,7 +221,7 @@ final class RepoWindowController: NSWindowController, NSWindowDelegate, NSToolba
     func toolbar(_ toolbar: NSToolbar, itemForItemIdentifier id: NSToolbarItem.Identifier,
                  willBeInsertedIntoToolbar flag: Bool) -> NSToolbarItem? {
         if id == .account {
-            let item = GitHubAccountToolbarItem(identifier: id)
+            let item = GitHubAccountToolbarItem(identifier: id, repository: repository)
             toolbarItems[id] = item
             return item
         }

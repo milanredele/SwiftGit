@@ -294,3 +294,25 @@ enum OperationState: Equatable {
 
 /// The SHA-1 of git's empty tree, used to diff root commits.
 let emptyTreeHash = "4b825dc642cb6eb9a060e54bf8d69288fbee4904"
+
+/// One commit of a branch, as used for pull request text.
+struct BranchCommit: Equatable {
+    var hash: String
+    var subject: String
+    var body: String
+
+    /// The full message: subject, blank line, body.
+    var message: String { body.isEmpty ? subject : subject + "\n\n" + body }
+
+    /// Parses `git log --format=%H%x1f%s%x1f%b%x1e`.
+    static func parse(_ text: String) -> [BranchCommit] {
+        text.split(separator: "\u{1e}").compactMap { record in
+            let f = record.split(separator: "\u{1f}", maxSplits: 2, omittingEmptySubsequences: false)
+            let hash = f[0].trimmingCharacters(in: .whitespacesAndNewlines)
+            guard f.count >= 2, hash.count >= 7 else { return nil }
+            return BranchCommit(hash: hash,
+                                subject: String(f[1]).trimmingCharacters(in: .whitespacesAndNewlines),
+                                body: f.count > 2 ? String(f[2]).trimmingCharacters(in: .whitespacesAndNewlines) : "")
+        }
+    }
+}

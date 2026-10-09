@@ -32,7 +32,13 @@ A lightweight, native macOS git client built with plain AppKit on top of the
   Ruby, CSS, HTML, C# and Ada. Both file versions are parsed in the background and
   only the colors for the visible diff lines are kept.
 - **GitHub pull requests** with base/head selection, PR templates, draft flag
-  and a searchable reviewer picker (people and teams).
+  and a searchable reviewer picker (people and teams). The title and
+  description default to the branch's earliest commit message. If the
+  [Claude Code](https://claude.com/claude-code) CLI (`claude`) is installed,
+  a **Generate** button writes them from all of the branch's commit messages
+  using the small Haiku model.
+- The active `gh` account (and your organization, when it owns the repository)
+  is shown in the toolbar; its menu switches between logged-in accounts.
 - Opens your configured `git difftool` / `git mergetool` when you want them.
 
 ## Requirements

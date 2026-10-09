@@ -549,6 +549,16 @@ final class Repository {
         return remotes.first?.name
     }
 
+    /// The GitHub repository behind the preferred remote (or the first GitHub remote).
+    var gitHubRemote: (repo: GitHubRepo, remote: String)? {
+        let preferred = preferredRemote
+        let ordered = remotes.filter { $0.name == preferred } + remotes.filter { $0.name != preferred }
+        for r in ordered {
+            if let gh = GitHubRepo.parse(remoteURL: r.url) { return (gh, r.name) }
+        }
+        return nil
+    }
+
     func localBranch(named name: String) -> RefInfo? { refs.first { $0.kind == .local && $0.name == name } }
 
     func checkout(branch: String) async {
@@ -782,6 +792,25 @@ final class Repository {
 
     func lastCommitMessage() async -> String {
         let r = await git.run(["log", "-1", "--format=%B"])
+        return r.ok ? r.output.trimmingCharacters(in: .whitespacesAndNewlines) : ""
+    }
+
+    /// Commits on `head` that are not on the first resolvable base ref, oldest
+    /// first (merge commits skipped), with the base ref that was used.
+    /// nil when none of the bases could be resolved.
+    func branchCommits(head: String, bases: [String], limit: Int = 300) async -> (base: String, commits: [BranchCommit])? {
+        for base in bases {
+            let r = await git.run(["log", "--no-merges", "--reverse", "--format=%H%x1f%s%x1f%b%x1e",
+                                   "\(base)..\(head)", "--"])
+            guard r.ok else { continue }
+            return (base, Array(BranchCommit.parse(r.output).prefix(limit)))
+        }
+        return nil
+    }
+
+    /// `git diff --stat` of what `head` changes since it split off `base`.
+    func diffStat(base: String, head: String) async -> String {
+        let r = await git.run(["diff", "--stat=100", "--stat-count=60", "\(base)...\(head)", "--"])
         return r.ok ? r.output.trimmingCharacters(in: .whitespacesAndNewlines) : ""
     }
 

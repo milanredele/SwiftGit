@@ -97,6 +97,20 @@ enum GitHub {
         guard r.ok else { throw GitHubError(message: r.errorMessage) }
     }
 
+    /// Logins of the organizations the active github.com account belongs to.
+    /// Private memberships are only listed when the token has `read:org`
+    /// (gh requests it by default). nil when the request failed.
+    static func organizations() async -> [String]? {
+        guard executable != nil else { return nil }
+        let r = await run(["api", "user/orgs", "--paginate", "--jq", ".[].login"], cwd: nil)
+        guard r.ok else { return nil }
+        return parseLines(r.output)
+    }
+
+    static func parseLines(_ text: String) -> [String] {
+        text.split(separator: "\n").map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
+    }
+
     static func viewerLogin() async -> String? {
         let r = await run(["api", "user", "--jq", ".login"], cwd: nil)
         let s = r.output.trimmingCharacters(in: .whitespacesAndNewlines)
