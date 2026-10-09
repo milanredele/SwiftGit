@@ -39,6 +39,33 @@ struct CoreTests {
         #expect(status.staged.map(\.path) == ["src/b.swift"])
     }
 
+    @Test func branchOrderingAndStaleness() async throws {
+        let dir = try Fixture.makeRepo()
+        let remote = dir.deletingLastPathComponent().appendingPathComponent(dir.lastPathComponent + "-remote.git")
+        try Fixture.git(["init", "-q", "--bare", remote.path], in: dir)
+        try Fixture.git(["remote", "add", "origin", remote.path], in: dir)
+        try Fixture.git(["push", "-q", "-u", "origin", "main", "feature"], in: dir)
+        // A newer, unmerged branch (created without touching the working tree).
+        let later = ["GIT_COMMITTER_DATE": "2026-02-01T12:00:00", "GIT_AUTHOR_DATE": "2026-02-01T12:00:00"]
+        let wip = try Fixture.git(["commit-tree", "HEAD^{tree}", "-p", "HEAD", "-m", "WIP"], in: dir, env: later)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        try Fixture.git(["branch", "wip", wip], in: dir)
+        // feature was merged into main and deleted on the remote → "gone".
+        try Fixture.git(["push", "-q", "origin", "--delete", "feature"], in: dir)
+        try Fixture.git(["fetch", "-q", "--prune", "origin"], in: dir)
+
+        let repo = try await Repository.open(dir)
+        await repo.refreshAll()
+        let locals = repo.localBranches
+        #expect(locals.map(\.name) == ["wip", "main", "feature"])
+        let feature = try #require(locals.first { $0.name == "feature" })
+        #expect(feature.upstreamGone)
+        #expect(feature.isMerged)
+        #expect(feature.isStale)
+        #expect(locals.first { $0.name == "wip" }?.isStale == false)
+        #expect(locals.first { $0.name == "main" }?.isStale == false)
+    }
+
     @Test func sideBySideRows() async throws {
         let dir = try Fixture.makeRepo()
         let repo = try await Repository.open(dir)

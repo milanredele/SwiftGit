@@ -99,6 +99,7 @@ final class HistoryViewController: NSViewController, NSTableViewDataSource, NSTa
                 detail.show(nil)
             }
             suppressSelection = false
+            followHeadIfChanged()
         case .summaries(let block):
             let start = block * SummaryCache.blockSize
             let range = start..<min(repository.graph.count, start + SummaryCache.blockSize)
@@ -111,8 +112,22 @@ final class HistoryViewController: NSViewController, NSTableViewDataSource, NSTa
             }
         case .refs, .status:
             reloadVisible()
+            followHeadIfChanged()
         case .activity:
             break
+        }
+    }
+
+    /// When the checked-out commit changes (checkout, pull, commit, reset…),
+    /// select and reveal the new HEAD. Waits until the graph contains it.
+    private func followHeadIfChanged() {
+        let head = repository.headHash
+        if !state.hasFollowedHead || head != state.followedHead {
+            guard let head, repository.graph.row(of: head) != nil else { return }
+            state.followedHead = head
+            state.hasFollowedHead = true
+            state.selectedCommit = head
+            select(hash: head, scroll: true)
         }
     }
 
@@ -147,6 +162,10 @@ final class HistoryViewController: NSViewController, NSTableViewDataSource, NSTa
     func numberOfRows(in tableView: NSTableView) -> Int { repository.graph.count }
 
     var testRowCount: Int { table.numberOfRows }
+    var testSelectedHash: Hash20? {
+        let r = table.selectedRow
+        return r >= 0 && r < repository.graph.count ? repository.graph.hashes[r] : nil
+    }
 
     func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
         guard let tableColumn else { return nil }

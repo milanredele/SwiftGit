@@ -125,6 +125,13 @@ struct RefInfo: Hashable {
     var behind = 0
     var upstreamGone = false
     var isHead = false
+    /// Unix time of the tip commit (tagger date for annotated tags).
+    var date: Int64 = 0
+    /// Fully merged into the repository's main branch (local branches only).
+    var isMerged = false
+
+    /// Merged into main, or its upstream was deleted on the remote: likely done.
+    var isStale: Bool { kind == .local && !isHead && (upstreamGone || isMerged) }
 
     var remoteName: String? {
         guard kind == .remote, let slash = name.firstIndex(of: "/") else { return nil }
@@ -136,13 +143,25 @@ struct RefInfo: Hashable {
         return String(name[name.index(after: slash)...])
     }
 
-    static let format = "%(refname)%09%(objectname)%09%(*objectname)%09%(upstream:short)%09%(upstream:track,nobracket)%09%(HEAD)"
+    static let format = "%(refname)%09%(objectname)%09%(*objectname)%09%(upstream:short)%09%(upstream:track,nobracket)%09%(HEAD)%09%(creatordate:unix)%09%(symref:short)"
+
+    /// Remote default branches from `refs/remotes/<remote>/HEAD`, e.g. ["origin": "origin/main"].
+    static func parseRemoteHeads(_ text: String) -> [String: String] {
+        var heads: [String: String] = [:]
+        for line in text.split(separator: "\n") {
+            let f = line.split(separator: "\t", omittingEmptySubsequences: false).map(String.init)
+            guard f.count == 8, f[0].hasPrefix("refs/remotes/"), f[0].hasSuffix("/HEAD"), !f[7].isEmpty else { continue }
+            let remote = String(f[0].dropFirst(13).dropLast(5))
+            heads[remote] = f[7]
+        }
+        return heads
+    }
 
     static func parse(_ text: String) -> [RefInfo] {
         var refs: [RefInfo] = []
         for line in text.split(separator: "\n") {
             let f = line.split(separator: "\t", omittingEmptySubsequences: false).map(String.init)
-            guard f.count == 6 else { continue }
+            guard f.count == 8 else { continue }
             let full = f[0]
             var r: RefInfo
             if full.hasPrefix("refs/heads/") {
@@ -166,6 +185,7 @@ struct RefInfo: Hashable {
                 if kv[0] == "behind" { r.behind = n }
             }
             r.isHead = f[5] == "*"
+            r.date = Int64(f[6]) ?? 0
             refs.append(r)
         }
         return refs

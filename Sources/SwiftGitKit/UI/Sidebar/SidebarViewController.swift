@@ -92,7 +92,7 @@ final class SidebarViewController: NSViewController, NSOutlineViewDataSource, NS
         }
 
         let tags = SidebarNode(.section, "Tags")
-        tags.children = repository.tags.reversed().map { SidebarNode(.tag, $0.name, ref: $0) }
+        tags.children = repository.tags.map { SidebarNode(.tag, $0.name, ref: $0) }
 
         let stashes = SidebarNode(.section, "Stashes")
         stashes.children = repository.stashes.map { SidebarNode(.stash, $0.message, stash: $0) }
@@ -213,22 +213,30 @@ final class SidebarViewController: NSViewController, NSOutlineViewDataSource, NS
         v.imageView?.image = Theme.symbol(symbol, n.title)
         v.imageView?.contentTintColor = n.ref?.isHead == true ? .controlAccentColor : .secondaryLabelColor
 
+        let stale = n.ref?.isStale == true
         let title = NSMutableAttributedString(string: n.title, attributes: [
             .font: n.ref?.isHead == true ? NSFont.systemFont(ofSize: 12.5, weight: .semibold) : NSFont.systemFont(ofSize: 12.5),
-            .foregroundColor: NSColor.labelColor,
+            .foregroundColor: stale ? NSColor.secondaryLabelColor : NSColor.labelColor,
         ])
+        var tip = n.ref?.upstream.map { "\(n.title) → \($0)" } ?? n.stash?.ref
         if let ref = n.ref, ref.kind == .local {
             var extra = ""
             if ref.ahead > 0 { extra += "  ↑\(ref.ahead)" }
             if ref.behind > 0 { extra += "  ↓\(ref.behind)" }
-            if ref.upstreamGone { extra += "  (gone)" }
+            if ref.upstreamGone {
+                extra += "  remote deleted"
+                tip = "\(ref.name): its remote branch \(ref.upstream ?? "") no longer exists (usually merged and deleted on GitHub)."
+            } else if ref.isMerged && !ref.isHead {
+                extra += "  merged"
+                tip = "\(ref.name) is fully merged into \(repository.mainBranch ?? "the main branch")."
+            }
             if !extra.isEmpty {
                 title.append(NSAttributedString(string: extra, attributes: [
-                    .font: NSFont.systemFont(ofSize: 11), .foregroundColor: NSColor.secondaryLabelColor]))
+                    .font: NSFont.systemFont(ofSize: 11), .foregroundColor: NSColor.tertiaryLabelColor]))
             }
         }
         v.textField?.attributedStringValue = title
-        v.toolTip = n.ref?.upstream.map { "\(n.title) → \($0)" } ?? n.stash?.ref
+        v.toolTip = tip
         return v
     }
 

@@ -49,6 +49,13 @@ struct UITests {
         #expect(body.leftScroll.frame.width > 100, "left pane width \(body.leftScroll.frame.width)")
         #expect(body.rightScroll.frame.height > 50, "right pane height \(body.rightScroll.frame.height)")
         #expect(detail.diffVC.testPlaceholder == nil)
+
+        // When HEAD moves (checkout/pull), the selection follows it.
+        #expect(history.testSelectedHash == repo.headHash)
+        let featureTip = try #require(repo.localBranches.first { $0.name == "feature" }.flatMap { Hash20($0.target) })
+        await repo.checkout(branch: "feature")
+        await UI.wait("selection follows HEAD") { history.testSelectedHash == featureTip }
+        #expect(repo.currentBranch == "feature")
         window.close()
     }
 

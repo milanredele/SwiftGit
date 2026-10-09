@@ -10,6 +10,9 @@ enum ViewMode: Int {
 final class TabState {
     var mode: ViewMode = .history
     var selectedCommit: Hash20?
+    /// HEAD as last seen by the history view; a change moves the selection to the new HEAD.
+    var followedHead: Hash20?
+    var hasFollowedHead = false
     var commitDraft = ""
     var amend = false
 }

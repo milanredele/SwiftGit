@@ -6,7 +6,7 @@ import Testing
 /// Builds throwaway repositories with a known history and working-tree state.
 enum Fixture {
     @discardableResult
-    static func git(_ args: [String], in dir: URL, input: String? = nil) throws -> String {
+    static func git(_ args: [String], in dir: URL, input: String? = nil, env extra: [String: String] = [:]) throws -> String {
         let p = Process()
         p.executableURL = URL(fileURLWithPath: "/usr/bin/git")
         p.arguments = ["-c", "user.name=Test User", "-c", "user.email=test@example.com",
@@ -17,6 +17,7 @@ enum Fixture {
         env["GIT_CONFIG_NOSYSTEM"] = "1"
         env["GIT_AUTHOR_DATE"] = "2026-01-01T12:00:00"
         env["GIT_COMMITTER_DATE"] = "2026-01-01T12:00:00"
+        env.merge(extra) { _, new in new }
         p.environment = env
         let out = Pipe(), err = Pipe()
         p.standardOutput = out

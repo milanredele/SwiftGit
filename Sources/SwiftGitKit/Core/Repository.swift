@@ -54,9 +54,22 @@ final class Repository {
     private var graphLoading = false
     private var graphReloadAgain = false
 
-    var localBranches: [RefInfo] { refs.filter { $0.kind == .local } }
-    var remoteBranches: [RefInfo] { refs.filter { $0.kind == .remote } }
-    var tags: [RefInfo] { refs.filter { $0.kind == .tag } }
+    /// Most recently updated first; merged / upstream-deleted branches last.
+    var localBranches: [RefInfo] {
+        refs.filter { $0.kind == .local }.sorted { a, b in
+            if a.isStale != b.isStale { return !a.isStale }
+            if a.date != b.date { return a.date > b.date }
+            return a.name < b.name
+        }
+    }
+    var remoteBranches: [RefInfo] { refs.filter { $0.kind == .remote }.sorted(by: Repository.newestFirst) }
+    var tags: [RefInfo] { refs.filter { $0.kind == .tag }.sorted(by: Repository.newestFirst) }
+    /// The branch others are merged into, e.g. "origin/main" or "main".
+    private(set) var mainBranch: String?
+
+    private static func newestFirst(_ a: RefInfo, _ b: RefInfo) -> Bool {
+        a.date != b.date ? a.date > b.date : a.name < b.name
+    }
     var currentBranch: String? { status.branch }
     var isBusy: Bool { activityTitle != nil }
 
@@ -162,9 +175,32 @@ final class Repository {
         async let remoteResult = git.run(["remote", "-v"])
         let (r1, r2, r3) = await (refsResult, stashResult, remoteResult)
         guard gen == refsGeneration else { return }
-        refs = r1.ok ? RefInfo.parse(r1.output) : []
+        var newRefs = r1.ok ? RefInfo.parse(r1.output) : []
         stashes = r2.ok ? StashInfo.parse(r2.output) : []
         remotes = r3.ok ? RemoteInfo.parse(r3.output) : []
+
+        // Which local branches are already merged into the main branch?
+        let remoteHeads = r1.ok ? RefInfo.parseRemoteHeads(r1.output) : [:]
+        let preferred = remotes.contains { $0.name == "origin" } ? "origin" : remotes.first?.name
+        var base = preferred.flatMap { remoteHeads[$0] }
+        if base == nil {
+            base = ["main", "master", "develop", "trunk"].first { name in
+                newRefs.contains { $0.kind == .local && $0.name == name }
+            }
+        }
+        mainBranch = base
+        if let base, let baseRef = newRefs.first(where: { $0.name == base && $0.kind != .tag }) {
+            let merged = await git.run(["for-each-ref", "--merged=\(base)", "--format=%(refname)", "refs/heads"])
+            guard gen == refsGeneration else { return }
+            let mergedNames = Set(merged.output.split(separator: "\n").map(String.init))
+            let baseLocal = baseRef.kind == .remote ? baseRef.remoteBranch : baseRef.name
+            for i in newRefs.indices where newRefs[i].kind == .local {
+                let r = newRefs[i]
+                // A branch pointing exactly at main (e.g. just created) is not "done".
+                newRefs[i].isMerged = mergedNames.contains(r.fullName) && r.name != baseLocal && r.target != baseRef.target
+            }
+        }
+        refs = newRefs
 
         var deco: [Hash20: [RefInfo]] = [:]
         for ref in refs {
