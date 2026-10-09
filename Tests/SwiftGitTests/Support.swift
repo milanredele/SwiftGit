@@ -167,6 +167,12 @@ enum UI {
         return colors
     }
 
+    static func find<T: NSView>(_ type: T.Type, in root: NSView) -> T? {
+        if let t = root as? T { return t }
+        for s in root.subviews { if let t = find(type, in: s) { return t } }
+        return nil
+    }
+
     static func dump(_ v: NSView, depth: Int, into out: inout String) {
         let f = v.frame
         var line = String(repeating: "  ", count: depth)

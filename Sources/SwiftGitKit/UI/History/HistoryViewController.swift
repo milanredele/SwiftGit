@@ -384,6 +384,7 @@ final class CommitDetailViewController: NSViewController, NSTableViewDataSource,
         files.headerView = nil
         files.style = .plain
         files.rowHeight = 20
+        files.usesAutomaticRowHeights = true
         files.dataSource = self
         files.delegate = self
         files.columnAutoresizingStyle = .uniformColumnAutoresizingStyle
@@ -477,7 +478,7 @@ final class CommitDetailViewController: NSViewController, NSTableViewDataSource,
         guard let d = detail, row < d.files.count else { return nil }
         let id = NSUserInterfaceItemIdentifier("fileCell")
         let v = tableView.makeView(withIdentifier: id, owner: nil) as? TextCellView ?? {
-            let v = TextCellView(font: .systemFont(ofSize: 12), color: .labelColor)
+            let v = TextCellView(font: .systemFont(ofSize: 12), color: .labelColor, wrapping: true)
             v.identifier = id
             return v
         }()

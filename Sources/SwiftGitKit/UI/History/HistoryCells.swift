@@ -157,21 +157,36 @@ final class SubjectCellView: NSTableCellView {
 
 /// Plain text cell (author, date, hash).
 final class TextCellView: NSTableCellView {
-    let label = NSTextField(labelWithString: "")
+    let label: NSTextField
 
-    init(font: NSFont, color: NSColor = .secondaryLabelColor) {
+    /// `wrapping`: long text wraps onto more lines and the row grows with it
+    /// (table must use automatic row heights); otherwise it is truncated.
+    init(font: NSFont, color: NSColor = .secondaryLabelColor, wrapping: Bool = false) {
+        label = wrapping ? NSTextField(wrappingLabelWithString: "") : NSTextField(labelWithString: "")
         super.init(frame: .zero)
         label.font = font
         label.textColor = color
-        label.lineBreakMode = .byTruncatingTail
         label.translatesAutoresizingMaskIntoConstraints = false
         addSubview(label)
         textField = label
-        NSLayoutConstraint.activate([
-            label.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 4),
-            label.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -4),
-            label.centerYAnchor.constraint(equalTo: centerYAnchor),
-        ])
+        if wrapping {
+            label.lineBreakMode = .byWordWrapping
+            label.maximumNumberOfLines = 0
+            label.setContentCompressionResistancePriority(.required, for: .vertical)
+            NSLayoutConstraint.activate([
+                label.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 4),
+                label.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -4),
+                label.topAnchor.constraint(equalTo: topAnchor, constant: 2),
+                label.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -2),
+            ])
+        } else {
+            label.lineBreakMode = .byTruncatingTail
+            NSLayoutConstraint.activate([
+                label.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 4),
+                label.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -4),
+                label.centerYAnchor.constraint(equalTo: centerYAnchor),
+            ])
+        }
     }
 
     required init?(coder: NSCoder) { fatalError() }

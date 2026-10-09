@@ -66,6 +66,42 @@ struct CoreTests {
         #expect(locals.first { $0.name == "main" }?.isStale == false)
     }
 
+    @Test func squashAndRebaseMergesAreDetected() async throws {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("gitui-squash-\(UUID().uuidString.prefix(8))")
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        func g(_ args: String...) throws { try Fixture.git(args, in: dir) }
+        try g("init", "-q")
+        try Fixture.write(dir, "a.txt", Fixture.lines(20))
+        try g("add", "-A"); try g("commit", "-q", "-m", "init")
+        // topic: two commits, squash-merged into main
+        try g("switch", "-q", "-c", "topic")
+        try Fixture.write(dir, "b.txt", "one\n"); try g("add", "-A"); try g("commit", "-q", "-m", "t1")
+        try Fixture.write(dir, "b.txt", "one\ntwo\n"); try g("commit", "-q", "-am", "t2")
+        // rebased: one commit, cherry-picked (rebase merge) into main
+        try g("switch", "-q", "-c", "rebased", "main")
+        try Fixture.write(dir, "c.txt", "c\n"); try g("add", "-A"); try g("commit", "-q", "-m", "r1")
+        // open: unmerged work
+        try g("switch", "-q", "-c", "open", "main")
+        try Fixture.write(dir, "d.txt", "d\n"); try g("add", "-A"); try g("commit", "-q", "-m", "o1")
+        try g("switch", "-q", "main")
+        try Fixture.write(dir, "e.txt", "main moved on\n"); try g("add", "-A"); try g("commit", "-q", "-m", "main work")
+        try g("merge", "-q", "--squash", "topic"); try g("commit", "-q", "-m", "Topic (squashed)")
+        try g("cherry-pick", "rebased")
+
+        let repo = try await Repository.open(dir)
+        await repo.refreshAll()
+        await UI.wait("content merge detection") {
+            repo.localBranches.first { $0.name == "topic" }?.isMerged == true
+                && repo.localBranches.first { $0.name == "rebased" }?.isMerged == true
+        }
+        let byName = Dictionary(uniqueKeysWithValues: repo.localBranches.map { ($0.name, $0) })
+        #expect(byName["topic"]?.mergedByContent == true)
+        #expect(byName["rebased"]?.mergedByContent == true)
+        #expect(byName["open"]?.isMerged == false)
+        #expect(repo.localBranches.last?.isStale == true)
+        #expect(repo.localBranches.first?.name == "main")
+    }
+
     @Test func sideBySideRows() async throws {
         let dir = try Fixture.makeRepo()
         let repo = try await Repository.open(dir)

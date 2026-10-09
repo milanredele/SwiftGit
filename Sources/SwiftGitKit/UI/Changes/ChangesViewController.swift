@@ -41,6 +41,7 @@ final class ChangesViewController: NSViewController, NSTableViewDataSource, NSTa
         t.headerView = nil
         t.style = .plain
         t.rowHeight = 20
+        t.usesAutomaticRowHeights = true
         t.allowsMultipleSelection = true
         t.columnAutoresizingStyle = .uniformColumnAutoresizingStyle
         t.dataSource = self
@@ -174,6 +175,7 @@ final class ChangesViewController: NSViewController, NSTableViewDataSource, NSTa
 
     var testUnstaged: [FileChange] { unstagedItems }
     var testStaged: [FileChange] { stagedItems }
+    var testUnstagedTable: NSTableView? { unstagedTable }
 
     // MARK: Updates
 
@@ -266,7 +268,7 @@ final class ChangesViewController: NSViewController, NSTableViewDataSource, NSTa
         guard row < items.count else { return nil }
         let id = NSUserInterfaceItemIdentifier("changeCell")
         let v = tableView.makeView(withIdentifier: id, owner: nil) as? TextCellView ?? {
-            let v = TextCellView(font: .systemFont(ofSize: 12), color: .labelColor)
+            let v = TextCellView(font: .systemFont(ofSize: 12), color: .labelColor, wrapping: true)
             v.identifier = id
             return v
         }()

@@ -43,6 +43,7 @@ final class SidebarViewController: NSViewController, NSOutlineViewDataSource, NS
         outline.headerView = nil
         outline.style = .sourceList
         outline.rowHeight = 22
+        outline.usesAutomaticRowHeights = true
         outline.floatsGroupRows = false
         outline.indentationPerLevel = 12
         outline.columnAutoresizingStyle = .uniformColumnAutoresizingStyle
@@ -167,7 +168,8 @@ final class SidebarViewController: NSViewController, NSOutlineViewDataSource, NS
                 v.textField = tf
                 NSLayoutConstraint.activate([
                     tf.leadingAnchor.constraint(equalTo: v.leadingAnchor, constant: 2),
-                    tf.centerYAnchor.constraint(equalTo: v.centerYAnchor),
+                    tf.topAnchor.constraint(equalTo: v.topAnchor, constant: 5),
+                    tf.bottomAnchor.constraint(equalTo: v.bottomAnchor, constant: -3),
                 ])
                 return v
             }()
@@ -182,8 +184,11 @@ final class SidebarViewController: NSViewController, NSOutlineViewDataSource, NS
             v.identifier = id
             let iv = NSImageView()
             iv.translatesAutoresizingMaskIntoConstraints = false
-            let tf = NSTextField(labelWithString: "")
-            tf.lineBreakMode = .byTruncatingTail
+            // Long names wrap and the row grows (automatic row heights).
+            let tf = NSTextField(wrappingLabelWithString: "")
+            tf.lineBreakMode = .byWordWrapping
+            tf.maximumNumberOfLines = 0
+            tf.setContentCompressionResistancePriority(.required, for: .vertical)
             tf.translatesAutoresizingMaskIntoConstraints = false
             v.addSubview(iv)
             v.addSubview(tf)
@@ -191,12 +196,13 @@ final class SidebarViewController: NSViewController, NSOutlineViewDataSource, NS
             v.textField = tf
             NSLayoutConstraint.activate([
                 iv.leadingAnchor.constraint(equalTo: v.leadingAnchor, constant: 2),
-                iv.centerYAnchor.constraint(equalTo: v.centerYAnchor),
+                iv.topAnchor.constraint(equalTo: v.topAnchor, constant: 3),
                 iv.widthAnchor.constraint(equalToConstant: 16),
                 iv.heightAnchor.constraint(equalToConstant: 16),
                 tf.leadingAnchor.constraint(equalTo: iv.trailingAnchor, constant: 5),
-                tf.trailingAnchor.constraint(lessThanOrEqualTo: v.trailingAnchor, constant: -2),
-                tf.centerYAnchor.constraint(equalTo: v.centerYAnchor),
+                tf.trailingAnchor.constraint(equalTo: v.trailingAnchor, constant: -2),
+                tf.topAnchor.constraint(equalTo: v.topAnchor, constant: 3),
+                tf.bottomAnchor.constraint(equalTo: v.bottomAnchor, constant: -3),
             ])
             return v
         }()
@@ -228,7 +234,8 @@ final class SidebarViewController: NSViewController, NSOutlineViewDataSource, NS
                 tip = "\(ref.name): its remote branch \(ref.upstream ?? "") no longer exists (usually merged and deleted on GitHub)."
             } else if ref.isMerged && !ref.isHead {
                 extra += "  merged"
-                tip = "\(ref.name) is fully merged into \(repository.mainBranch ?? "the main branch")."
+                let how = ref.mergedByContent ? "squash- or rebase-merged" : "fully merged"
+                tip = "\(ref.name) is \(how) into \(repository.mainBranch ?? "the main branch")."
             }
             if !extra.isEmpty {
                 title.append(NSAttributedString(string: extra, attributes: [

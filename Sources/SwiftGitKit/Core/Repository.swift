@@ -52,6 +52,9 @@ final class Repository {
     private var refsGeneration = 0
     private var refsSignature = ""
     private var graphLoading = false
+    /// "branchTip|mainTip" → content already in main (squash / rebase merge).
+    private var contentMergeCache: [String: Bool] = [:]
+    private var contentMergeTask: Task<Void, Never>?
     private var graphReloadAgain = false
 
     /// Most recently updated first; merged / upstream-deleted branches last.
@@ -194,10 +197,22 @@ final class Repository {
             guard gen == refsGeneration else { return }
             let mergedNames = Set(merged.output.split(separator: "\n").map(String.init))
             let baseLocal = baseRef.kind == .remote ? baseRef.remoteBranch : baseRef.name
+            var unknown: [RefInfo] = []
             for i in newRefs.indices where newRefs[i].kind == .local {
                 let r = newRefs[i]
                 // A branch pointing exactly at main (e.g. just created) is not "done".
-                newRefs[i].isMerged = mergedNames.contains(r.fullName) && r.name != baseLocal && r.target != baseRef.target
+                guard r.name != baseLocal, r.target != baseRef.target else { continue }
+                if mergedNames.contains(r.fullName) {
+                    newRefs[i].isMerged = true
+                } else if let hit = contentMergeCache[r.target + "|" + baseRef.target] {
+                    newRefs[i].isMerged = hit
+                    newRefs[i].mergedByContent = hit
+                } else if !r.isHead {
+                    unknown.append(r)
+                }
+            }
+            if !unknown.isEmpty {
+                detectContentMerges(Array(unknown.prefix(40)), base: base, baseTarget: baseRef.target)
             }
         }
         refs = newRefs
@@ -218,6 +233,57 @@ final class Repository {
             refsSignature = signature
             await reloadGraph()
         }
+    }
+
+    /// Squash and rebase merges leave no ancestry link, so check content in the
+    /// background: a branch is merged if all its commits have equivalent
+    /// patches in main (`git cherry`), or if its whole diff since the merge
+    /// base has the same patch-id as a single commit on main (squash).
+    private func detectContentMerges(_ branches: [RefInfo], base: String, baseTarget: String) {
+        contentMergeTask?.cancel()
+        contentMergeTask = Task { [weak self] in
+            var found: [String: String] = [:]   // fullName → target
+            for b in branches {
+                guard let self, !Task.isCancelled else { return }
+                let merged = await self.isMergedByContent(b.target, into: base)
+                self.contentMergeCache[b.target + "|" + baseTarget] = merged
+                if merged { found[b.fullName] = b.target }
+            }
+            guard let self, !Task.isCancelled, !found.isEmpty else { return }
+            var changed = false
+            for i in self.refs.indices where found[self.refs[i].fullName] == self.refs[i].target {
+                self.refs[i].isMerged = true
+                self.refs[i].mergedByContent = true
+                changed = true
+            }
+            if changed { self.notify(.refs) }
+        }
+    }
+
+    private func isMergedByContent(_ tip: String, into base: String) async -> Bool {
+        let cherry = await git.run(["cherry", base, tip])
+        guard cherry.ok else { return false }
+        let lines = cherry.output.split(separator: "\n")
+        if lines.isEmpty { return false }
+        if lines.allSatisfy({ $0.hasPrefix("-") }) { return true }   // rebased / cherry-picked
+
+        let mb = await git.run(["merge-base", base, tip])
+        let mergeBase = mb.output.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard mb.ok, !mergeBase.isEmpty else { return false }
+        // Pipe inside sh so large logs never pass through this process.
+        let branchPatch = await ProcessRunner.run(
+            executable: "/bin/sh",
+            arguments: ["-c", "git diff --no-color --no-ext-diff \"$1\" \"$2\" | git patch-id --stable", "sh", mergeBase, tip],
+            cwd: root)
+        guard let branchID = branchPatch.output.split(separator: " ").first.map(String.init), !branchID.isEmpty else { return false }
+        let mainPatches = await ProcessRunner.run(
+            executable: "/bin/sh",
+            arguments: ["-c", "git log -p --no-merges --no-color --no-ext-diff -n 3000 \"$1..$2\" | git patch-id --stable", "sh", mergeBase, base],
+            cwd: root)
+        for line in mainPatches.output.split(separator: "\n") where line.hasPrefix(branchID) {
+            return true
+        }
+        return false
     }
 
     func reloadGraph() async {

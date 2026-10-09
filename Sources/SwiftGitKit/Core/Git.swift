@@ -129,6 +129,8 @@ struct RefInfo: Hashable {
     var date: Int64 = 0
     /// Fully merged into the repository's main branch (local branches only).
     var isMerged = false
+    /// Merged by squash or rebase (content is in main, history is not).
+    var mergedByContent = false
 
     /// Merged into main, or its upstream was deleted on the remote: likely done.
     var isStale: Bool { kind == .local && !isHead && (upstreamGone || isMerged) }

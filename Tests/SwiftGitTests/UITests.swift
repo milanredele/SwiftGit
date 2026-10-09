@@ -96,6 +96,43 @@ struct UITests {
         window.close()
     }
 
+    @Test func longNamesWrapAndRowsGrow() async throws {
+        UI.setUpApp()
+        let dir = try Fixture.makeRepo()
+        let longBranch = "topic/a-really-long-branch-name-that-cannot-possibly-fit-into-the-sidebar-width"
+        try Fixture.git(["branch", longBranch, "main"], in: dir)
+        let longPath = "src/a-very-long-file-name-that-will-definitely-need-to-wrap-onto-a-second-line-in-the-list.txt"
+        try Fixture.write(dir, longPath, "x\n")
+        let repo = try await Repository.open(dir)
+        let wc = RepoWindowController(repository: repo)
+        let window = try #require(wc.window)
+        window.setContentSize(NSSize(width: 1280, height: 800))
+        await repo.refreshAll()
+        wc.showChanges(nil)
+        await UI.settle(window)
+        UI.snapshot(window, "wrapping")
+
+        // Sidebar: the long branch row must be taller than a single line and contain its text.
+        let outline = try #require(UI.find(NSOutlineView.self, in: window.contentView!))
+        let row = try #require((0..<outline.numberOfRows).first {
+            (outline.item(atRow: $0) as? SidebarNode)?.title == longBranch })
+        let rect = outline.rect(ofRow: row)
+        #expect(rect.height > 30, "branch row height \(rect.height)")
+        if let cell = outline.view(atColumn: 0, row: row, makeIfNecessary: false) as? NSTableCellView,
+           let tf = cell.textField {
+            #expect(tf.frame.height <= rect.height + 0.5, "label \(tf.frame.height) taller than row \(rect.height)")
+            #expect(tf.frame.height > 20)
+        }
+
+        // Changes list: the long untracked file name wraps too.
+        let changes = try #require(wc.testRoot.main?.content.changes)
+        let table = try #require(changes.testUnstagedTable)
+        let fileRow = try #require(changes.testUnstaged.firstIndex { $0.path.hasPrefix("src/") })
+        let fileRect = table.rect(ofRow: fileRow)
+        #expect(fileRect.height > 25, "file row height \(fileRect.height)")
+        window.close()
+    }
+
     @Test func backgroundTabUnloadsViews() async throws {
         let (repo, wc, window) = try await openWindow()
         #expect(wc.testRoot.main != nil)
