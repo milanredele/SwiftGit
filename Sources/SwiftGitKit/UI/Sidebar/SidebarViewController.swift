@@ -285,6 +285,7 @@ final class SidebarViewController: NSViewController, NSOutlineViewDataSource, NS
 
     func outlineViewSelectionDidChange(_ notification: Notification) {
         guard !suppressSelection, let n = outline.item(atRow: outline.selectedRow) as? SidebarNode else { return }
+        if let ref = n.ref { repository.checkMergeStatus([ref]) }
         let target = n.ref?.target ?? n.stash?.hash
         if let target, let hash = Hash20(target) { actions?.reveal(commit: hash) }
     }
@@ -323,6 +324,7 @@ final class SidebarViewController: NSViewController, NSOutlineViewDataSource, NS
             menu.addItem(.separator())
             add("New Branch from \(ref.name)…", #selector(menuNewBranch(_:)))
             add("Rename…", #selector(menuRename(_:)))
+            if !ref.isHead { add("Check Merge Status…", #selector(menuMergeStatus(_:))) }
             if !ref.isHead { add("Delete…", #selector(menuDelete(_:))) }
             menu.addItem(.separator())
             add("Push", #selector(menuPush(_:)))
@@ -377,6 +379,10 @@ final class SidebarViewController: NSViewController, NSOutlineViewDataSource, NS
 
     @objc private func menuRename(_ item: NSMenuItem) {
         if let ref = node(item)?.ref { actions?.promptRename(ref) }
+    }
+
+    @objc private func menuMergeStatus(_ item: NSMenuItem) {
+        if let ref = node(item)?.ref { actions?.showMergeStatus(ref) }
     }
 
     @objc private func menuDelete(_ item: NSMenuItem) {

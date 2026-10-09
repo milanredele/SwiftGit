@@ -444,14 +444,14 @@ final class RepoWindowController: NSWindowController, NSWindowDelegate, NSToolba
         }
         Task {
             let info = await repository.deletionInfo(for: ref)
+            let report = await repository.mergeReport(for: ref)
             var lines: [String] = []
             let main = info.mainBranch ?? "the main branch"
-            if ref.isMerged {
-                lines.append(ref.mergedByContent
-                             ? "✓ Squash- or rebase-merged into \(main): its changes are already there."
-                             : "✓ Fully merged into \(main).")
+            let isMerged = report.merged || ref.isMerged
+            if isMerged {
+                lines.append(report.steps.last(where: { $0.hasPrefix("✓") }) ?? "✓ Merged into \(main).")
             } else {
-                lines.append("✗ Not merged into \(main).")
+                lines.append("✗ Not merged into \(main) (normal, squash or rebase).")
             }
             if let upstream = ref.upstream {
                 if ref.upstreamGone {
@@ -468,7 +468,7 @@ final class RepoWindowController: NSWindowController, NSWindowDelegate, NSToolba
                 let when = info.lastDate.map { relativeDateFormatter.string(from: $0) } ?? ""
                 lines.append("Last commit: “\(info.lastSubject)” \(when)")
             }
-            let losing = info.uniqueCommits > 0 && !ref.isMerged
+            let losing = info.uniqueCommits > 0 && !isMerged
             if losing {
                 lines.append("")
                 lines.append("⚠︎ \(info.uniqueCommits) commit\(info.uniqueCommits == 1 ? " exists" : "s exist") only on this branch and will no longer be reachable. Git keeps them for a while (git reflog), but they will eventually be removed.")
@@ -508,6 +508,28 @@ final class RepoWindowController: NSWindowController, NSWindowDelegate, NSToolba
                                        message: lines.joined(separator: "\n"),
                                        ok: "Delete on Remote", destructive: true) else { return }
             await repository.deleteRemoteBranch(ref)
+        }
+    }
+
+    /// Explains step by step whether (and how) a branch is merged into main.
+    func showMergeStatus(_ ref: RefInfo) {
+        Task {
+            let report = await repository.mergeReport(for: ref)
+            let alert = NSAlert()
+            alert.messageText = report.merged ? "“\(ref.name)” is merged" : "“\(ref.name)” is not merged"
+            alert.informativeText = report.steps.joined(separator: "\n")
+            alert.addButton(withTitle: "OK")
+            alert.addButton(withTitle: "Copy Details")
+            let response: NSApplication.ModalResponse
+            if let window, window.attachedSheet == nil {
+                response = await withCheckedContinuation { c in alert.beginSheetModal(for: window) { c.resume(returning: $0) } }
+            } else {
+                response = alert.runModal()
+            }
+            if response == .alertSecondButtonReturn {
+                NSPasteboard.general.clearContents()
+                NSPasteboard.general.setString("\(ref.name) @ \(ref.target)\n" + report.steps.joined(separator: "\n"), forType: .string)
+            }
         }
     }
 

@@ -110,6 +110,9 @@ struct CoreTests {
 
         let repo = try await Repository.open(dir)
         await repo.refreshAll()
+        // Lazy: nothing is checked until branches are shown / selected.
+        #expect(repo.localBranches.first { $0.name == "topic" }?.isMerged == false)
+        repo.checkMergeStatus(repo.localBranches)
         let expected = ["topic", "rebased", "nearby", "later"]
         await UI.wait("content merge detection", timeout: 20) {
             expected.allSatisfy { name in repo.localBranches.first { $0.name == name }?.isMerged == true }
@@ -119,6 +122,12 @@ struct CoreTests {
             #expect(byName[name]?.mergedByContent == true, "\(name) not detected as merged")
         }
         #expect(byName["open"]?.isMerged == false)
+        let openReport = await repo.mergeReport(for: try #require(byName["open"]))
+        #expect(!openReport.merged)
+        #expect(openReport.steps.contains { $0.hasPrefix("✗ Merging it now would still change 1 file") })
+        let laterReport = await repo.mergeReport(for: try #require(byName["later"]))
+        #expect(laterReport.merged)
+        #expect(laterReport.steps.last?.hasPrefix("✓") == true)
         #expect(repo.localBranches.last?.isStale == true)
         #expect(repo.localBranches.first?.name == "main")
     }

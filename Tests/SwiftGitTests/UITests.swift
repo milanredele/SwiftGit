@@ -89,6 +89,12 @@ struct UITests {
 
         let body = changes.diffVC.testBody
         #expect(!body.isHidden)
+        // The commit button must be fully inside the left column.
+        let button = changes.testCommitButton
+        let column = try #require((changes.view as? NSSplitView)?.arrangedSubviews.first)
+        #expect(column.frame.width >= 360, "left column \(column.frame.width)")
+        let inColumn = button.convert(button.bounds, to: column)
+        #expect(column.bounds.contains(inColumn), "commit button \(inColumn) outside \(column.bounds)")
         let diffColors = UI.sampleColors(changes.diffVC.view)
         #expect(diffColors.count > 3, "diff area renders only \(diffColors.sorted())")
         // Text must start right of the line-number gutter, not underneath it.

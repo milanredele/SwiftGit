@@ -14,6 +14,7 @@ final class HistoryViewController: NSViewController, NSTableViewDataSource, NSTa
     private var suppressSelection = false
     private let splitRules = SplitRules(minFirst: 120, minSecond: 200, initial: { $0 * 0.45 })
     private var graphColumn: NSTableColumn!
+    private var visibleCheckTask: Task<Void, Never>?
 
     init(repository: Repository, state: TabState, actions: RepoWindowController?) {
         self.repository = repository
@@ -72,6 +73,27 @@ final class HistoryViewController: NSViewController, NSTableViewDataSource, NSTa
         split.setHoldingPriority(.init(250), forSubviewAt: 1)
         view = split
         updateGraphColumn()
+        scroll.contentView.postsBoundsChangedNotifications = true
+        NotificationCenter.default.addObserver(self, selector: #selector(historyScrolled(_:)),
+                                               name: NSView.boundsDidChangeNotification, object: scroll.contentView)
+    }
+
+    @objc private func historyScrolled(_ n: Notification) { scheduleVisibleMergeCheck() }
+
+    /// Squash/rebase detection only for branches currently on screen.
+    private func scheduleVisibleMergeCheck() {
+        visibleCheckTask?.cancel()
+        visibleCheckTask = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: 300_000_000)
+            guard let self, !Task.isCancelled else { return }
+            let visible = self.table.rows(in: self.table.visibleRect)
+            guard visible.length > 0 else { return }
+            var refs: [RefInfo] = []
+            for row in visible.location..<min(self.repository.graph.count, visible.location + visible.length) {
+                refs += self.repository.decorations[self.repository.graph.hashes[row]] ?? []
+            }
+            self.repository.checkMergeStatus(refs)
+        }
     }
 
     override func viewDidLayout() {
@@ -100,6 +122,7 @@ final class HistoryViewController: NSViewController, NSTableViewDataSource, NSTa
             }
             suppressSelection = false
             followHeadIfChanged()
+            scheduleVisibleMergeCheck()
         case .summaries(let block):
             let start = block * SummaryCache.blockSize
             let range = start..<min(repository.graph.count, start + SummaryCache.blockSize)
@@ -113,6 +136,7 @@ final class HistoryViewController: NSViewController, NSTableViewDataSource, NSTa
         case .refs, .status:
             reloadVisible()
             followHeadIfChanged()
+            if case .refs = change { scheduleVisibleMergeCheck() }
         case .activity:
             break
         }
@@ -288,6 +312,9 @@ final class HistoryViewController: NSViewController, NSTableViewDataSource, NSTa
         let deletable = refs.filter { ($0.kind == .local && !$0.isHead && $0.name != "HEAD") || $0.kind == .remote }
         if !deletable.isEmpty {
             menu.addItem(.separator())
+            for ref in deletable where ref.kind == .local {
+                add("Check Merge Status of \(ref.name)…", #selector(checkMergeStatus(_:)), ref.fullName)
+            }
             for ref in deletable {
                 add(ref.kind == .local ? "Delete Branch \(ref.name)…" : "Delete \(ref.name) on Remote…",
                     #selector(deleteRef(_:)), ref.fullName)
@@ -340,6 +367,12 @@ final class HistoryViewController: NSViewController, NSTableViewDataSource, NSTa
     @objc private func resetHere(_ item: NSMenuItem) {
         guard let pair = item.representedObject as? [String], pair.count == 2 else { return }
         actions?.confirmReset(to: pair[0], mode: pair[1])
+    }
+
+    @objc private func checkMergeStatus(_ item: NSMenuItem) {
+        guard let full = item.representedObject as? String,
+              let ref = repository.refs.first(where: { $0.fullName == full }) else { return }
+        actions?.showMergeStatus(ref)
     }
 
     @objc private func deleteRef(_ item: NSMenuItem) {

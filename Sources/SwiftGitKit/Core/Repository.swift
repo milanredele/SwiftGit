@@ -57,6 +57,8 @@ final class Repository {
     private var contentMergeTask: Task<Void, Never>?
     private var contentQueue: [(key: String, ref: RefInfo, base: String, baseTarget: String)] = []
     private var patchIDCache: (target: String, ids: Set<String>)?
+    /// Main branch used for merge checks: (name, tip, local name).
+    private var mergeBaseInfo: (name: String, target: String, local: String?)?
     private var graphReloadAgain = false
 
     /// Most recently updated first; merged / upstream-deleted branches last.
@@ -208,7 +210,7 @@ final class Repository {
             guard gen == refsGeneration else { return }
             let mergedNames = Set(merged.output.split(separator: "\n").map(String.init))
             let baseLocal = baseRef.kind == .remote ? baseRef.remoteBranch : baseRef.name
-            var unknown: [RefInfo] = []
+            mergeBaseInfo = (base, baseRef.target, baseLocal)
             for i in newRefs.indices where newRefs[i].kind == .local {
                 let r = newRefs[i]
                 // A branch pointing exactly at main (e.g. just created) is not "done".
@@ -216,15 +218,13 @@ final class Repository {
                 if mergedNames.contains(r.fullName) {
                     newRefs[i].isMerged = true
                 } else if let hit = contentMergeCache[r.target + "|" + baseRef.target] {
+                    // Squash/rebase checks run lazily (checkMergeStatus); reuse earlier results.
                     newRefs[i].isMerged = hit
                     newRefs[i].mergedByContent = hit
-                } else if !r.isHead {
-                    unknown.append(r)
                 }
             }
-            if !unknown.isEmpty {
-                detectContentMerges(Array(unknown.prefix(40)), base: base, baseTarget: baseRef.target)
-            }
+        } else {
+            mergeBaseInfo = nil
         }
         refs = newRefs
 
@@ -246,9 +246,20 @@ final class Repository {
         }
     }
 
-    /// Squash and rebase merges leave no ancestry link, so check content in the
-    /// background, one branch at a time. A running check is never cancelled by
-    /// refreshes (busy repos refresh often); new branches are queued instead.
+    /// Checks (lazily) whether these branches were squash- or rebase-merged.
+    /// Called for branches visible in the history, selected, or about to be
+    /// deleted, so big repos never scan every branch.
+    func checkMergeStatus(_ candidates: [RefInfo]) {
+        guard let base = mergeBaseInfo else { return }
+        let todo = candidates.filter { r in
+            r.kind == .local && !r.isHead && !r.isMerged && r.name != base.local && r.target != base.target
+                && contentMergeCache[r.target + "|" + base.target] == nil
+        }
+        if !todo.isEmpty { detectContentMerges(todo, base: base.name, baseTarget: base.target) }
+    }
+
+    /// Runs the checks in the background, one branch at a time. A running
+    /// check is never cancelled by refreshes; new branches are queued.
     private func detectContentMerges(_ branches: [RefInfo], base: String, baseTarget: String) {
         for b in branches {
             let key = b.target + "|" + baseTarget
@@ -259,19 +270,54 @@ final class Repository {
         contentMergeTask = Task { [weak self] in
             while let self, !self.contentQueue.isEmpty {
                 let item = self.contentQueue.removeFirst()
-                let merged = await self.isMergedByContent(item.ref.target, into: item.base, baseTarget: item.baseTarget)
-                self.contentMergeCache[item.key] = merged
-                guard merged else { continue }
-                var changed = false
-                for i in self.refs.indices where self.refs[i].fullName == item.ref.fullName && self.refs[i].target == item.ref.target {
-                    self.refs[i].isMerged = true
-                    self.refs[i].mergedByContent = true
-                    changed = true
-                }
-                if changed { self.notify(.refs) }
+                let report = await self.contentCheck(item.ref.target, base: item.base, baseTarget: item.baseTarget)
+                self.recordContentMerge(item.ref, baseTarget: item.baseTarget, merged: report.merged)
             }
             self?.contentMergeTask = nil
         }
+    }
+
+    private func recordContentMerge(_ ref: RefInfo, baseTarget: String, merged: Bool) {
+        contentMergeCache[ref.target + "|" + baseTarget] = merged
+        guard merged else { return }
+        var changed = false
+        for i in refs.indices where refs[i].fullName == ref.fullName && refs[i].target == ref.target && !refs[i].isMerged {
+            refs[i].isMerged = true
+            refs[i].mergedByContent = true
+            changed = true
+        }
+        if changed { notify(.refs) }
+    }
+
+    struct MergeReport {
+        var merged = false
+        var steps: [String] = []
+    }
+
+    /// Runs all checks now (no cache) and explains each step. Used by the
+    /// delete dialog and "Check Merge Status…".
+    func mergeReport(for ref: RefInfo) async -> MergeReport {
+        guard let base = mergeBaseInfo else {
+            return MergeReport(merged: false, steps: ["No main branch found (no origin/HEAD, origin/main or main)."])
+        }
+        var report = MergeReport()
+        report.steps.append("Main branch: \(base.name) (\(base.target.prefix(8)))")
+        if ref.target == base.target {
+            report.steps.append("Points at the same commit as \(base.name).")
+            return report
+        }
+        let ancestor = await git.run(["merge-base", "--is-ancestor", ref.fullName, base.name])
+        if ancestor.status == 0 {
+            report.merged = true
+            report.steps.append("✓ All its commits are in \(base.name) (normal merge or fast-forward).")
+            return report
+        }
+        report.steps.append("✗ Not an ancestor of \(base.name) (no normal merge).")
+        let content = await contentCheck(ref.target, base: base.name, baseTarget: base.target, explain: true)
+        report.steps += content.steps
+        report.merged = content.merged
+        if ref.kind == .local { recordContentMerge(ref, baseTarget: base.target, merged: content.merged) }
+        return report
     }
 
     /// Is everything on `tip` already contained in `base`?
@@ -280,33 +326,66 @@ final class Repository {
     ///     (squash merge, also when base changed nearby or later).
     ///  3. patch-id of the whole branch diff (zero context) equals one recent
     ///     commit on base (squash merge where base later edited the same lines).
-    private func isMergedByContent(_ tip: String, into base: String, baseTarget: String) async -> Bool {
+    private func contentCheck(_ tip: String, base: String, baseTarget: String, explain: Bool = false) async -> MergeReport {
+        var r = MergeReport()
+        func note(_ s: String) { if explain { r.steps.append(s) } }
+
         let cherry = await git.run(["cherry", base, tip])
-        guard cherry.ok else { return false }
+        guard cherry.ok else { note("git cherry failed: \(cherry.errorMessage)"); return r }
         let lines = cherry.output.split(separator: "\n")
-        if lines.isEmpty { return false }
-        if lines.allSatisfy({ $0.hasPrefix("-") }) { return true }
+        let equivalent = lines.filter { $0.hasPrefix("-") }.count
+        note("Commits with an equivalent change in \(base): \(equivalent) of \(lines.count).")
+        if !lines.isEmpty && equivalent == lines.count {
+            r.merged = true
+            note("✓ Rebase- or squash-merged: every commit has an equivalent change in \(base).")
+            return r
+        }
 
         let mb = await git.run(["merge-base", base, tip])
         let mergeBase = mb.output.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard mb.ok, !mergeBase.isEmpty else { return false }
-        // A branch without any changes of its own is not "merged", just empty.
-        let ownChanges = await git.run(["diff", "--quiet", "--no-ext-diff", mergeBase, tip])
-        guard ownChanges.status == 1 else { return false }
+        guard mb.ok, !mergeBase.isEmpty else { note("No common ancestor with \(base)."); return r }
+        let stat = await git.run(["diff", "--shortstat", "--no-ext-diff", mergeBase, tip])
+        let own = stat.output.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !own.isEmpty else { note("The branch has no changes of its own since \(mergeBase.prefix(8))."); return r }
+        note("Branch changes since it split off (\(mergeBase.prefix(8))): \(own).")
 
         let merge = await git.run(["merge-tree", "--write-tree", "--no-messages", base, tip])
-        if merge.ok {
-            let mergedTree = merge.output.split(separator: "\n").first.map(String.init) ?? ""
+        let mergedTree = merge.output.split(separator: "\n").first.map(String.init) ?? ""
+        if merge.ok && !mergedTree.isEmpty {
             let baseTree = await git.run(["rev-parse", "\(base)^{tree}"]).output.trimmingCharacters(in: .whitespacesAndNewlines)
-            if !mergedTree.isEmpty && mergedTree == baseTree { return true }
+            if mergedTree == baseTree {
+                r.merged = true
+                note("✓ Squash-merged: merging it into \(base) now would change nothing.")
+                return r
+            }
+            if explain {
+                let changed = await git.run(["diff", "--name-only", "--no-ext-diff", baseTree, mergedTree])
+                let files = changed.output.split(separator: "\n")
+                note("✗ Merging it now would still change \(files.count) file\(files.count == 1 ? "" : "s"): "
+                     + files.prefix(5).joined(separator: ", ") + (files.count > 5 ? ", …" : ""))
+            }
+        } else if merge.status == 1 {
+            note("✗ Merging it now would conflict with \(base).")
+        } else {
+            note("merge-tree unavailable: \(merge.errorMessage)")
         }
+
         // Pipe inside sh so large diffs never pass through this process.
         let branchPatch = await ProcessRunner.run(
             executable: "/bin/sh",
             arguments: ["-c", "git diff -U0 --no-color --no-ext-diff \"$1\" \"$2\" | git patch-id --stable", "sh", mergeBase, tip],
             cwd: root)
-        guard let branchID = branchPatch.output.split(separator: " ").first.map(String.init), !branchID.isEmpty else { return false }
-        return await recentPatchIDs(base: base, baseTarget: baseTarget).contains(branchID)
+        guard let branchID = branchPatch.output.split(separator: " ").first.map(String.init), !branchID.isEmpty else {
+            note("Could not compute the branch's patch-id.")
+            return r
+        }
+        if await recentPatchIDs(base: base, baseTarget: baseTarget).contains(branchID) {
+            r.merged = true
+            note("✓ Squash-merged: one commit in \(base) has exactly the branch's changes.")
+        } else {
+            note("✗ No single commit among the last 1000 in \(base) has exactly the branch's changes.")
+        }
+        return r
     }
 
     /// Patch-ids (zero context) of the last 1000 non-merge commits on base,

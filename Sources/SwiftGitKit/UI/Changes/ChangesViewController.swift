@@ -20,9 +20,10 @@ final class ChangesViewController: NSViewController, NSTableViewDataSource, NSTa
     private let amendBox = NSButton(checkboxWithTitle: "Amend", target: nil, action: nil)
     private let commitButton = NSButton(title: "Commit", target: nil, action: nil)
     private let branchHint = makeLabel("", font: .systemFont(ofSize: 11), color: .secondaryLabelColor)
+    private let amendWarning = makeLabel("", font: .systemFont(ofSize: 11), color: .systemOrange)
     private var updatingSelection = false
     private let split = NSSplitView()
-    private let splitRules = SplitRules(minFirst: 260, minSecond: 300, initial: { _ in 340 })
+    private let splitRules = SplitRules(minFirst: 360, minSecond: 300, initial: { _ in 440 })
 
     init(repository: Repository, state: TabState, actions: RepoWindowController?) {
         self.repository = repository
@@ -111,7 +112,15 @@ final class ChangesViewController: NSViewController, NSTableViewDataSource, NSTa
         commitButton.target = self
         commitButton.action = #selector(commit(_:))
         commitButton.toolTip = "Commit (⌘↩)"
-        let commitRow = NSStackView(views: [amendBox, branchHint, NSView(), commitButton])
+        amendBox.toolTip = "Amend replaces the last commit instead of adding a new one: the staged changes are added to it and the message above becomes its new message. Use it to fix the commit you just made. If that commit was already pushed, amending rewrites published history and needs a force push."
+        commitButton.setContentCompressionResistancePriority(.required, for: .horizontal)
+        commitButton.setContentHuggingPriority(.required, for: .horizontal)
+        branchHint.lineBreakMode = .byTruncatingMiddle
+        branchHint.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        amendWarning.lineBreakMode = .byWordWrapping
+        amendWarning.maximumNumberOfLines = 0
+        amendWarning.isHidden = true
+        let commitRow = NSStackView(views: [amendBox, NSView(), commitButton])
         commitRow.orientation = .horizontal
         commitRow.translatesAutoresizingMaskIntoConstraints = false
 
@@ -119,7 +128,18 @@ final class ChangesViewController: NSViewController, NSTableViewDataSource, NSTa
         let midSep = NSBox(); midSep.boxType = .separator; midSep.translatesAutoresizingMaskIntoConstraints = false
         let botSep = NSBox(); botSep.boxType = .separator; botSep.translatesAutoresizingMaskIntoConstraints = false
 
-        for v in [unstagedHeader, topSep, unstagedScroll, midSep, stagedHeader, stagedScroll, botSep, messageScroll, commitRow] as [NSView] {
+        // Commit box: "Commit to <branch>", message, [Amend … Commit], amend warning.
+        let commitBox = NSStackView(views: [branchHint, messageScroll, commitRow, amendWarning])
+        commitBox.orientation = .vertical
+        commitBox.alignment = .leading
+        commitBox.spacing = 6
+        commitBox.detachesHiddenViews = true
+        commitBox.translatesAutoresizingMaskIntoConstraints = false
+        for v in [messageScroll, commitRow, amendWarning] as [NSView] {
+            v.widthAnchor.constraint(equalTo: commitBox.widthAnchor).isActive = true
+        }
+
+        for v in [unstagedHeader, topSep, unstagedScroll, midSep, stagedHeader, stagedScroll, botSep, commitBox] as [NSView] {
             left.addSubview(v)
         }
         NSLayoutConstraint.activate([
@@ -145,19 +165,16 @@ final class ChangesViewController: NSViewController, NSTableViewDataSource, NSTa
             botSep.topAnchor.constraint(equalTo: stagedScroll.bottomAnchor),
             botSep.leadingAnchor.constraint(equalTo: left.leadingAnchor),
             botSep.trailingAnchor.constraint(equalTo: left.trailingAnchor),
-            messageScroll.topAnchor.constraint(equalTo: botSep.bottomAnchor, constant: 8),
-            messageScroll.leadingAnchor.constraint(equalTo: left.leadingAnchor, constant: 8),
-            messageScroll.trailingAnchor.constraint(equalTo: left.trailingAnchor, constant: -8),
+            commitBox.topAnchor.constraint(equalTo: botSep.bottomAnchor, constant: 6),
+            commitBox.leadingAnchor.constraint(equalTo: left.leadingAnchor, constant: 8),
+            commitBox.trailingAnchor.constraint(equalTo: left.trailingAnchor, constant: -8),
+            commitBox.bottomAnchor.constraint(equalTo: left.bottomAnchor, constant: -8),
             messageScroll.heightAnchor.constraint(equalToConstant: 96),
-            commitRow.topAnchor.constraint(equalTo: messageScroll.bottomAnchor, constant: 6),
-            commitRow.leadingAnchor.constraint(equalTo: left.leadingAnchor, constant: 8),
-            commitRow.trailingAnchor.constraint(equalTo: left.trailingAnchor, constant: -8),
-            commitRow.bottomAnchor.constraint(equalTo: left.bottomAnchor, constant: -8),
         ])
 
         split.isVertical = true
         split.dividerStyle = .thin
-        split.autosaveName = "ChangesSplit"
+        split.autosaveName = "ChangesSplit2"
         split.delegate = splitRules
         addChild(diffVC)
         split.addArrangedSubview(left)
@@ -176,6 +193,7 @@ final class ChangesViewController: NSViewController, NSTableViewDataSource, NSTa
     var testUnstaged: [FileChange] { unstagedItems }
     var testStaged: [FileChange] { stagedItems }
     var testUnstagedTable: NSTableView? { unstagedTable }
+    var testCommitButton: NSButton { commitButton }
 
     // MARK: Updates
 
@@ -244,7 +262,11 @@ final class ChangesViewController: NSViewController, NSTableViewDataSource, NSTa
         commitButton.title = merging ? "Commit Merge" : (amendBox.state == .on ? "Amend" : "Commit")
         let hasMessage = !messageView.string.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         commitButton.isEnabled = hasMessage && (!s.staged.isEmpty || amendBox.state == .on || merging) && s.conflicts.isEmpty
-        branchHint.stringValue = s.branch.map { "to \($0)" } ?? "detached HEAD"
+        branchHint.stringValue = s.branch.map { "Commit to \($0)" } ?? "Commit on detached HEAD"
+        // Amending a commit that is already on the remote rewrites published history.
+        let lastCommitPushed = s.upstream != nil && s.ahead == 0
+        amendWarning.isHidden = !(amendBox.state == .on && lastCommitPushed)
+        amendWarning.stringValue = "The last commit is already pushed to \(s.upstream ?? "the remote"). Amending rewrites it, so you will need to force push."
         if merging, messageView.string.isEmpty, let msg = repository.mergeMessage() {
             messageView.string = msg
             state.commitDraft = msg
