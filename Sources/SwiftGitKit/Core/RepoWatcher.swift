@@ -19,7 +19,9 @@ final class RepoWatcher {
             let handler = watcher.handler
             Task { @MainActor in handler(paths) }
         }
-        let flags = FSEventStreamCreateFlags(kFSEventStreamCreateFlagUseCFTypes | kFSEventStreamCreateFlagNoDefer)
+        // File-level events so .git/index writes can be told apart from ref changes.
+        let flags = FSEventStreamCreateFlags(kFSEventStreamCreateFlagUseCFTypes | kFSEventStreamCreateFlagNoDefer
+                                             | kFSEventStreamCreateFlagFileEvents)
         stream = FSEventStreamCreate(kCFAllocatorDefault, callback, &context, paths as CFArray,
                                      FSEventStreamEventId(kFSEventStreamEventIdSinceNow), 0.25, flags)
         if let stream {

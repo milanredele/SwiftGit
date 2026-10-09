@@ -55,6 +55,8 @@ final class Repository {
     /// "branchTip|mainTip" → content already in main (squash / rebase merge).
     private var contentMergeCache: [String: Bool] = [:]
     private var contentMergeTask: Task<Void, Never>?
+    private var contentQueue: [(key: String, ref: RefInfo, base: String, baseTarget: String)] = []
+    private var patchIDCache: (target: String, ids: Set<String>)?
     private var graphReloadAgain = false
 
     /// Most recently updated first; merged / upstream-deleted branches last.
@@ -132,14 +134,16 @@ final class Repository {
     private func handleFileEvents(_ paths: [String]) {
         let gd = gitDir.path
         for p in paths {
-            if p.hasPrefix(gd) {
-                let rel = p.dropFirst(gd.count)
-                if rel.hasPrefix("/objects") || rel.hasPrefix("/logs") || rel.hasPrefix("/lfs") { continue }
-                pendingRefs = true
+            guard p.hasPrefix(gd) else { pendingStatus = true; continue }
+            let rel = p.dropFirst(gd.count)
+            if rel.hasPrefix("/objects") || rel.hasPrefix("/logs") || rel.hasPrefix("/lfs") { continue }
+            // Index writes (e.g. an IDE running git status) only affect status.
+            if rel.hasPrefix("/index") || rel == "/" || rel.isEmpty {
                 pendingStatus = true
-            } else {
-                pendingStatus = true
+                continue
             }
+            pendingRefs = true
+            pendingStatus = true
         }
         guard pendingRefs || pendingStatus else { return }
         refreshTask?.cancel()
@@ -186,6 +190,13 @@ final class Repository {
         let remoteHeads = r1.ok ? RefInfo.parseRemoteHeads(r1.output) : [:]
         let preferred = remotes.contains { $0.name == "origin" } ? "origin" : remotes.first?.name
         var base = preferred.flatMap { remoteHeads[$0] }
+        if base == nil, let preferred {
+            // No origin/HEAD (e.g. remote added by hand): the remote's main is
+            // more up to date than a local main that may not have been pulled.
+            base = ["main", "master", "develop", "trunk"].map { "\(preferred)/\($0)" }.first { name in
+                newRefs.contains { $0.kind == .remote && $0.name == name }
+            }
+        }
         if base == nil {
             base = ["main", "master", "develop", "trunk"].first { name in
                 newRefs.contains { $0.kind == .local && $0.name == name }
@@ -236,54 +247,79 @@ final class Repository {
     }
 
     /// Squash and rebase merges leave no ancestry link, so check content in the
-    /// background: a branch is merged if all its commits have equivalent
-    /// patches in main (`git cherry`), or if its whole diff since the merge
-    /// base has the same patch-id as a single commit on main (squash).
+    /// background, one branch at a time. A running check is never cancelled by
+    /// refreshes (busy repos refresh often); new branches are queued instead.
     private func detectContentMerges(_ branches: [RefInfo], base: String, baseTarget: String) {
-        contentMergeTask?.cancel()
+        for b in branches {
+            let key = b.target + "|" + baseTarget
+            guard contentMergeCache[key] == nil, !contentQueue.contains(where: { $0.key == key }) else { continue }
+            contentQueue.append((key: key, ref: b, base: base, baseTarget: baseTarget))
+        }
+        guard contentMergeTask == nil, !contentQueue.isEmpty else { return }
         contentMergeTask = Task { [weak self] in
-            var found: [String: String] = [:]   // fullName → target
-            for b in branches {
-                guard let self, !Task.isCancelled else { return }
-                let merged = await self.isMergedByContent(b.target, into: base)
-                self.contentMergeCache[b.target + "|" + baseTarget] = merged
-                if merged { found[b.fullName] = b.target }
+            while let self, !self.contentQueue.isEmpty {
+                let item = self.contentQueue.removeFirst()
+                let merged = await self.isMergedByContent(item.ref.target, into: item.base, baseTarget: item.baseTarget)
+                self.contentMergeCache[item.key] = merged
+                guard merged else { continue }
+                var changed = false
+                for i in self.refs.indices where self.refs[i].fullName == item.ref.fullName && self.refs[i].target == item.ref.target {
+                    self.refs[i].isMerged = true
+                    self.refs[i].mergedByContent = true
+                    changed = true
+                }
+                if changed { self.notify(.refs) }
             }
-            guard let self, !Task.isCancelled, !found.isEmpty else { return }
-            var changed = false
-            for i in self.refs.indices where found[self.refs[i].fullName] == self.refs[i].target {
-                self.refs[i].isMerged = true
-                self.refs[i].mergedByContent = true
-                changed = true
-            }
-            if changed { self.notify(.refs) }
+            self?.contentMergeTask = nil
         }
     }
 
-    private func isMergedByContent(_ tip: String, into base: String) async -> Bool {
+    /// Is everything on `tip` already contained in `base`?
+    ///  1. `git cherry`: every commit has an equivalent patch in base (rebase merge).
+    ///  2. `git merge-tree`: merging tip into base would not change base's tree
+    ///     (squash merge, also when base changed nearby or later).
+    ///  3. patch-id of the whole branch diff (zero context) equals one recent
+    ///     commit on base (squash merge where base later edited the same lines).
+    private func isMergedByContent(_ tip: String, into base: String, baseTarget: String) async -> Bool {
         let cherry = await git.run(["cherry", base, tip])
         guard cherry.ok else { return false }
         let lines = cherry.output.split(separator: "\n")
         if lines.isEmpty { return false }
-        if lines.allSatisfy({ $0.hasPrefix("-") }) { return true }   // rebased / cherry-picked
+        if lines.allSatisfy({ $0.hasPrefix("-") }) { return true }
 
         let mb = await git.run(["merge-base", base, tip])
         let mergeBase = mb.output.trimmingCharacters(in: .whitespacesAndNewlines)
         guard mb.ok, !mergeBase.isEmpty else { return false }
-        // Pipe inside sh so large logs never pass through this process.
+        // A branch without any changes of its own is not "merged", just empty.
+        let ownChanges = await git.run(["diff", "--quiet", "--no-ext-diff", mergeBase, tip])
+        guard ownChanges.status == 1 else { return false }
+
+        let merge = await git.run(["merge-tree", "--write-tree", "--no-messages", base, tip])
+        if merge.ok {
+            let mergedTree = merge.output.split(separator: "\n").first.map(String.init) ?? ""
+            let baseTree = await git.run(["rev-parse", "\(base)^{tree}"]).output.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !mergedTree.isEmpty && mergedTree == baseTree { return true }
+        }
+        // Pipe inside sh so large diffs never pass through this process.
         let branchPatch = await ProcessRunner.run(
             executable: "/bin/sh",
-            arguments: ["-c", "git diff --no-color --no-ext-diff \"$1\" \"$2\" | git patch-id --stable", "sh", mergeBase, tip],
+            arguments: ["-c", "git diff -U0 --no-color --no-ext-diff \"$1\" \"$2\" | git patch-id --stable", "sh", mergeBase, tip],
             cwd: root)
         guard let branchID = branchPatch.output.split(separator: " ").first.map(String.init), !branchID.isEmpty else { return false }
-        let mainPatches = await ProcessRunner.run(
+        return await recentPatchIDs(base: base, baseTarget: baseTarget).contains(branchID)
+    }
+
+    /// Patch-ids (zero context) of the last 1000 non-merge commits on base,
+    /// computed once per base tip.
+    private func recentPatchIDs(base: String, baseTarget: String) async -> Set<String> {
+        if let cached = patchIDCache, cached.target == baseTarget { return cached.ids }
+        let r = await ProcessRunner.run(
             executable: "/bin/sh",
-            arguments: ["-c", "git log -p --no-merges --no-color --no-ext-diff -n 3000 \"$1..$2\" | git patch-id --stable", "sh", mergeBase, base],
+            arguments: ["-c", "git log -p -U0 --no-merges --no-color --no-ext-diff -n 1000 \"$1\" | git patch-id --stable", "sh", base],
             cwd: root)
-        for line in mainPatches.output.split(separator: "\n") where line.hasPrefix(branchID) {
-            return true
-        }
-        return false
+        let ids = Set(r.output.split(separator: "\n").compactMap { $0.split(separator: " ").first.map(String.init) })
+        patchIDCache = (baseTarget, ids)
+        return ids
     }
 
     struct BranchDeletionInfo {

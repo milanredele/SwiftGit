@@ -83,20 +83,41 @@ struct CoreTests {
         // open: unmerged work
         try g("switch", "-q", "-c", "open", "main")
         try Fixture.write(dir, "d.txt", "d\n"); try g("add", "-A"); try g("commit", "-q", "-m", "o1")
+        // nearby: edits line 10 of a.txt; main edits line 12 before the squash
+        // (different diff context → plain patch-ids differ)
+        var a = (1...20).map { "line \($0)" }
+        try g("switch", "-q", "-c", "nearby", "main")
+        a[9] = "line 10 (nearby)"
+        try Fixture.write(dir, "a.txt", a.joined(separator: "\n") + "\n"); try g("commit", "-q", "-am", "n1")
+        // later: edits line 3; after the squash main edits the same line again
+        try g("switch", "-q", "-c", "later", "main")
+        var l = (1...20).map { "line \($0)" }
+        l[2] = "line three"
+        try Fixture.write(dir, "a.txt", l.joined(separator: "\n") + "\n"); try g("commit", "-q", "-am", "l1")
         try g("switch", "-q", "main")
         try Fixture.write(dir, "e.txt", "main moved on\n"); try g("add", "-A"); try g("commit", "-q", "-m", "main work")
         try g("merge", "-q", "--squash", "topic"); try g("commit", "-q", "-m", "Topic (squashed)")
         try g("cherry-pick", "rebased")
+        a = (1...20).map { "line \($0)" }
+        a[11] = "line 12 (main)"
+        try Fixture.write(dir, "a.txt", a.joined(separator: "\n") + "\n"); try g("commit", "-q", "-am", "main edits line 12")
+        try g("merge", "-q", "--squash", "nearby"); try g("commit", "-q", "-m", "Nearby (squashed)")
+        try g("merge", "-q", "--squash", "later"); try g("commit", "-q", "-m", "Later (squashed)")
+        a = try String(contentsOf: dir.appendingPathComponent("a.txt"), encoding: .utf8)
+            .split(separator: "\n").map(String.init)
+        a[2] = "line THREE (main again)"
+        try Fixture.write(dir, "a.txt", a.joined(separator: "\n") + "\n"); try g("commit", "-q", "-am", "main edits line 3")
 
         let repo = try await Repository.open(dir)
         await repo.refreshAll()
-        await UI.wait("content merge detection") {
-            repo.localBranches.first { $0.name == "topic" }?.isMerged == true
-                && repo.localBranches.first { $0.name == "rebased" }?.isMerged == true
+        let expected = ["topic", "rebased", "nearby", "later"]
+        await UI.wait("content merge detection", timeout: 20) {
+            expected.allSatisfy { name in repo.localBranches.first { $0.name == name }?.isMerged == true }
         }
         let byName = Dictionary(uniqueKeysWithValues: repo.localBranches.map { ($0.name, $0) })
-        #expect(byName["topic"]?.mergedByContent == true)
-        #expect(byName["rebased"]?.mergedByContent == true)
+        for name in expected {
+            #expect(byName[name]?.mergedByContent == true, "\(name) not detected as merged")
+        }
         #expect(byName["open"]?.isMerged == false)
         #expect(repo.localBranches.last?.isStale == true)
         #expect(repo.localBranches.first?.name == "main")
