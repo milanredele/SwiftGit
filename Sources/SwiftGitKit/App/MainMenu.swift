@@ -20,6 +20,7 @@ import AppKit
     func toggleWholeFile(_ sender: Any?)
     func nextChange(_ sender: Any?)
     func previousChange(_ sender: Any?)
+    func toggleTopoOrder(_ sender: Any?)
     func revealInFinder(_ sender: Any?)
     func openInTerminal(_ sender: Any?)
 }
@@ -72,6 +73,7 @@ enum MainMenu {
         let view = NSMenu(title: "View")
         view.addItem(withTitle: "History", action: #selector(RepoActions.showHistory(_:)), keyEquivalent: "1")
         view.addItem(withTitle: "Changes", action: #selector(RepoActions.showChanges(_:)), keyEquivalent: "2")
+        view.addItem(withTitle: "Group Commits by Branch", action: #selector(RepoActions.toggleTopoOrder(_:)), keyEquivalent: "")
         view.addItem(.separator())
         let unified = view.addItem(withTitle: "Unified Diff", action: #selector(RepoActions.toggleUnifiedDiff(_:)), keyEquivalent: "u")
         unified.keyEquivalentModifierMask = [.command, .option]

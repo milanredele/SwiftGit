@@ -133,6 +133,33 @@ struct UITests {
         window.close()
     }
 
+    @Test func openTabsSurviveQuit() async throws {
+        UI.setUpApp()
+        let defaults = try #require(UserDefaults(suiteName: "SwiftGitTests-\(UUID().uuidString)"))
+        let a = try Fixture.makeRepo(), b = try Fixture.makeRepo()
+
+        let first = AppDelegate(defaults: defaults, presentsWindows: false)
+        await first.open(a, select: true)
+        await first.open(b, select: true)
+        #expect(defaults.stringArray(forKey: "openRepositories") == [a.path, b.path])
+
+        // Quit: AppKit asks, then closes every tab window before exiting.
+        _ = first.applicationShouldTerminate(NSApplication.shared)
+        for c in first.controllers { c.window?.close() }
+        first.applicationWillTerminate(Notification(name: NSApplication.willTerminateNotification))
+        #expect(defaults.stringArray(forKey: "openRepositories") == [a.path, b.path])
+
+        // Relaunch
+        let second = AppDelegate(defaults: defaults, presentsWindows: false)
+        await second.restoreOpenRepositories()
+        #expect(second.controllers.map(\.repository.root.path) == [a.path, b.path])
+
+        // Closing a tab normally (not quitting) forgets it.
+        second.controllers.last?.window?.close()
+        #expect(defaults.stringArray(forKey: "openRepositories") == [a.path])
+        second.controllers.first?.window?.close()
+    }
+
     @Test func backgroundTabUnloadsViews() async throws {
         let (repo, wc, window) = try await openWindow()
         #expect(wc.testRoot.main != nil)

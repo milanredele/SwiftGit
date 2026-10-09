@@ -102,6 +102,35 @@ struct CoreTests {
         #expect(repo.localBranches.first?.name == "main")
     }
 
+    @Test func historyIsInDateOrder() async throws {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("gitui-order-\(UUID().uuidString.prefix(8))")
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        func commit(_ msg: String, day: Int, file: String) throws {
+            try Fixture.write(dir, file, msg + "\n")
+            try Fixture.git(["add", "-A"], in: dir)
+            let d = String(format: "2026-03-%02dT12:00:00", day)
+            try Fixture.git(["commit", "-q", "-m", msg], in: dir, env: ["GIT_AUTHOR_DATE": d, "GIT_COMMITTER_DATE": d])
+        }
+        try Fixture.git(["init", "-q"], in: dir)
+        try commit("c1", day: 1, file: "main.txt")
+        try Fixture.git(["switch", "-q", "-c", "side"], in: dir)
+        try commit("b1", day: 2, file: "side.txt")
+        try Fixture.git(["switch", "-q", "main"], in: dir)
+        try commit("c2", day: 3, file: "main.txt")
+        try Fixture.git(["switch", "-q", "side"], in: dir)
+        try commit("b2", day: 4, file: "side.txt")
+        try Fixture.git(["switch", "-q", "main"], in: dir)
+        try Fixture.git(["merge", "-q", "--no-ff", "side", "-m", "merge"], in: dir,
+                        env: ["GIT_AUTHOR_DATE": "2026-03-05T12:00:00", "GIT_COMMITTER_DATE": "2026-03-05T12:00:00"])
+
+        UserDefaults.standard.removeObject(forKey: Repository.topoOrderKey)
+        let repo = try await Repository.open(dir)
+        await repo.refreshAll()
+        await UI.wait("summaries") { (0..<repo.graph.count).allSatisfy { repo.summary(row: $0) != nil } }
+        let subjects = (0..<repo.graph.count).compactMap { repo.summary(row: $0)?.subject }
+        #expect(subjects == ["merge", "b2", "c2", "b1", "c1"])
+    }
+
     @Test func sideBySideRows() async throws {
         let dir = try Fixture.makeRepo()
         let repo = try await Repository.open(dir)

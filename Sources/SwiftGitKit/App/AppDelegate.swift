@@ -3,11 +3,23 @@ import AppKit
 @MainActor
 public final class AppDelegate: NSObject, NSApplicationDelegate {
     public override init() {
+        defaults = .standard
+        super.init()
+    }
+
+    init(defaults: UserDefaults, presentsWindows: Bool = true) {
+        self.defaults = defaults
+        self.presentsWindows = presentsWindows
         super.init()
     }
 
     private(set) var controllers: [RepoWindowController] = []
     private let openReposKey = "openRepositories"
+    private let defaults: UserDefaults
+    /// Tests drive controllers without putting windows on screen.
+    private var presentsWindows = true
+    /// Quitting closes every tab window; those closes must not shrink the saved list.
+    private var isTerminating = false
 
     public func applicationDidFinishLaunching(_ notification: Notification) {
         signal(SIGPIPE, SIG_IGN)
@@ -15,17 +27,26 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         NSWindow.allowsAutomaticWindowTabbing = true
         NSApp.mainMenu = MainMenu.build()
 
-        let paths = UserDefaults.standard.stringArray(forKey: openReposKey) ?? []
-        if paths.isEmpty {
-            openRepositoryPanel()
-        } else {
-            Task {
-                for p in paths { await open(URL(fileURLWithPath: p), select: false) }
-                if controllers.isEmpty { openRepositoryPanel() }
-                controllers.first?.window?.makeKeyAndOrderFront(nil)
-            }
+        Task {
+            await restoreOpenRepositories()
+            if controllers.isEmpty { openRepositoryPanel() }
         }
         NSApp.activate(ignoringOtherApps: true)
+    }
+
+    /// Reopens the tabs that were open at the last quit, in the same order.
+    func restoreOpenRepositories() async {
+        let paths = defaults.stringArray(forKey: openReposKey) ?? []
+        for p in paths where FileManager.default.fileExists(atPath: p) {
+            await open(URL(fileURLWithPath: p), select: false)
+        }
+        if presentsWindows { controllers.first?.window?.makeKeyAndOrderFront(nil) }
+    }
+
+    public func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        saveOpenRepositories()
+        isTerminating = true
+        return .terminateNow
     }
 
     public func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
@@ -38,7 +59,8 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     public func applicationWillTerminate(_ notification: Notification) {
-        saveOpenRepositories()
+        if !isTerminating { saveOpenRepositories() }
+        isTerminating = true
     }
 
     public func application(_ sender: NSApplication, openFile filename: String) -> Bool {
@@ -89,11 +111,13 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         controller.onClose = { [weak self, weak controller] in
             guard let self, let controller else { return }
             self.controllers.removeAll { $0 === controller }
-            self.saveOpenRepositories()
+            if !self.isTerminating { self.saveOpenRepositories() }
         }
         let host = controllers.last?.window
         controllers.append(controller)
-        if let host, let window = controller.window {
+        if !presentsWindows {
+            // headless (tests): no windows on screen
+        } else if let host, let window = controller.window {
             host.addTabbedWindow(window, ordered: .above)
             if select { window.makeKeyAndOrderFront(nil) }
         } else {
@@ -116,6 +140,6 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         for c in controllers where !ordered.contains(c.repository.root.path) {
             ordered.append(c.repository.root.path)
         }
-        UserDefaults.standard.set(ordered, forKey: openReposKey)
+        defaults.set(ordered, forKey: openReposKey)
     }
 }

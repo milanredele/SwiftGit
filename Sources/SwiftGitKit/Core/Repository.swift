@@ -286,13 +286,18 @@ final class Repository {
         return false
     }
 
+    static let topoOrderKey = "history.topoOrder"
+
     func reloadGraph() async {
         if graphLoading { graphReloadAgain = true; return }
         graphLoading = true
         defer { graphLoading = false }
         repeat {
             graphReloadAgain = false
-            var args = ["log", "--branches", "--remotes", "--tags", "--topo-order", "--format=%H %P"]
+            // Date order by default (children still always above parents);
+            // topological order groups each branch's commits together.
+            let order = UserDefaults.standard.bool(forKey: Repository.topoOrderKey) ? "--topo-order" : "--date-order"
+            var args = ["log", "--branches", "--remotes", "--tags", order, "--format=%H %P"]
             if status.headOID != nil { args.append("HEAD") }
             let builder = GraphBuilder()
             let r = await git.run(args, onStdout: { data in builder.feed(data) })

@@ -73,6 +73,8 @@ final class RepoWindowController: NSWindowController, NSWindowDelegate, NSToolba
 
         NotificationCenter.default.addObserver(self, selector: #selector(occlusionChanged(_:)),
                                                name: NSWindow.didChangeOcclusionStateNotification, object: window)
+        NotificationCenter.default.addObserver(self, selector: #selector(historyOrderChanged(_:)),
+                                               name: RepoWindowController.historyOrderChanged, object: nil)
     }
 
     required init?(coder: NSCoder) { fatalError() }
@@ -248,6 +250,8 @@ final class RepoWindowController: NSWindowController, NSWindowDelegate, NSToolba
             menuItem.state = state.mode == .history ? .on : .off
         case #selector(showChanges(_:)):
             menuItem.state = state.mode == .changes ? .on : .off
+        case #selector(toggleTopoOrder(_:)):
+            menuItem.state = UserDefaults.standard.bool(forKey: Repository.topoOrderKey) ? .on : .off
         default:
             break
         }
@@ -344,6 +348,18 @@ final class RepoWindowController: NSWindowController, NSWindowDelegate, NSToolba
             await repository.refreshAll()
             await repository.reloadGraph()
         }
+    }
+
+    static let historyOrderChanged = Notification.Name("SwiftGitHistoryOrderChanged")
+
+    @objc func toggleTopoOrder(_ sender: Any?) {
+        let d = UserDefaults.standard
+        d.set(!d.bool(forKey: Repository.topoOrderKey), forKey: Repository.topoOrderKey)
+        NotificationCenter.default.post(name: RepoWindowController.historyOrderChanged, object: nil)
+    }
+
+    @objc private func historyOrderChanged(_ n: Notification) {
+        Task { await repository.reloadGraph() }
     }
 
     @objc func showHistory(_ sender: Any?) { setMode(.history) }
