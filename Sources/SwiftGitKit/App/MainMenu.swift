@@ -24,6 +24,9 @@ import AppKit
     func revealInFinder(_ sender: Any?)
     func openInTerminal(_ sender: Any?)
     func undoGitOperation(_ sender: Any?)
+    func findInHistory(_ sender: Any?)
+    func findNextInHistory(_ sender: Any?)
+    func findPreviousInHistory(_ sender: Any?)
     func recoverDiscarded(_ sender: Any?)
 }
 
@@ -73,6 +76,11 @@ enum MainMenu {
         edit.addItem(withTitle: "Copy", action: #selector(NSText.copy(_:)), keyEquivalent: "c")
         edit.addItem(withTitle: "Paste", action: #selector(NSText.paste(_:)), keyEquivalent: "v")
         edit.addItem(withTitle: "Select All", action: #selector(NSText.selectAll(_:)), keyEquivalent: "a")
+        edit.addItem(.separator())
+        edit.addItem(withTitle: "Find in History…", action: #selector(RepoActions.findInHistory(_:)), keyEquivalent: "f")
+        edit.addItem(withTitle: "Find Next", action: #selector(RepoActions.findNextInHistory(_:)), keyEquivalent: "g")
+        let findPrev = edit.addItem(withTitle: "Find Previous", action: #selector(RepoActions.findPreviousInHistory(_:)), keyEquivalent: "g")
+        findPrev.keyEquivalentModifierMask = [.command, .shift]
         add(edit, title: "Edit", to: main)
 
         // View

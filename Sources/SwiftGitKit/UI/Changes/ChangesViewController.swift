@@ -376,6 +376,9 @@ final class ChangesViewController: NSViewController, NSTableViewDataSource, NSTa
         if files.count == 1 && !files[0].isConflict {
             add("Open in Diff Tool", #selector(menuDifftool(_:)))
         }
+        if files.count == 1 && !files[0].isUntracked {
+            add("Show File History", #selector(menuFileHistory(_:)))
+        }
         add("Open File", #selector(menuOpenFile(_:)))
         add("Show in Finder", #selector(menuReveal(_:)))
         add("Copy Path", #selector(menuCopyPath(_:)))
@@ -384,6 +387,11 @@ final class ChangesViewController: NSViewController, NSTableViewDataSource, NSTa
     private func files(from item: NSMenuItem) -> [FileChange] {
         guard let t = item.representedObject as? NSTableView else { return [] }
         return selected(t)
+    }
+
+    @objc private func menuFileHistory(_ item: NSMenuItem) {
+        guard let first = files(from: item).first else { return }
+        actions?.showFileHistory(first.path)
     }
 
     @objc private func menuStage(_ item: NSMenuItem) {

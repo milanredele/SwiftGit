@@ -288,6 +288,8 @@ final class RepoWindowController: NSWindowController, NSWindowDelegate, NSToolba
             return !busy
         case #selector(undoGitOperation(_:)):
             return !busy && repository.undoCandidate != nil
+        case #selector(findNextInHistory(_:)), #selector(findPreviousInHistory(_:)):
+            return state.mode == .history && state.historySearch != nil
         case #selector(popStash(_:)):
             return !busy && !repository.stashes.isEmpty
         case #selector(createPullRequest(_:)):
@@ -471,6 +473,20 @@ final class RepoWindowController: NSWindowController, NSWindowDelegate, NSToolba
             guard await Prompt.confirm(window, title: "Undo \(e.title)?", message: e.explanation, ok: "Undo") else { return }
             await repository.undo(e)
         }
+    }
+
+    @objc func findInHistory(_ sender: Any?) {
+        setMode(.history)
+        root.main?.content.history?.showSearch()
+    }
+
+    @objc func findNextInHistory(_ sender: Any?) { root.main?.content.history?.moveToMatch(forward: true) }
+    @objc func findPreviousInHistory(_ sender: Any?) { root.main?.content.history?.moveToMatch(forward: false) }
+
+    /// Switches to History and lists the commits that changed `path`.
+    func showFileHistory(_ path: String) {
+        setMode(.history)
+        root.main?.content.history?.showSearch(Repository.HistoryQuery.filePrefix + path)
     }
 
     @objc func recoverDiscarded(_ sender: Any?) {

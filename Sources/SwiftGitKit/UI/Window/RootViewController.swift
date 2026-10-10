@@ -15,6 +15,8 @@ final class TabState {
     var hasFollowedHead = false
     var commitDraft = ""
     var amend = false
+    /// History search text ("file:<path>" for a file's history); nil when the search bar is closed.
+    var historySearch: String?
 }
 
 /// Banner shown while a merge/rebase/cherry-pick is in progress.

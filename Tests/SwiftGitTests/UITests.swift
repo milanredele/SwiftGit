@@ -323,5 +323,47 @@ struct UITests {
         _ = wc
         window.close()
     }
+
+    @Test func historySearchAndFileHistory() async throws {
+        let (repo, wc, window) = try await openWindow()
+        let history = try #require(wc.testRoot.main?.content.history)
+
+        wc.findInHistory(nil)
+        #expect(history.testSearchVisible)
+        history.showSearch("feature")
+        await UI.wait("matches") { history.testMatchCount == 3 }   // 2 feature commits + "Merge feature"
+        #expect(history.testMatchLabel.hasSuffix("of 3") || history.testMatchLabel == "3 matches")
+        let head = try #require(repo.headHash)
+        let initial = try #require(repo.graph.row(of: head))
+        #expect(!history.testIsDimmed(row: initial))   // "Merge feature" (HEAD) matches
+        let secondHash = try #require(Hash20(try Fixture.git(["rev-parse", "main~2"], in: repo.root).trimmingCharacters(in: .whitespacesAndNewlines)))
+        let secondRow = try #require(repo.graph.row(of: secondHash))
+        #expect(history.testIsDimmed(row: secondRow))
+        history.moveToMatch(forward: true)
+        #expect(history.testMatchLabel.contains(" of 3"))
+        UI.snapshot(window, "history-search")
+
+        // Hash prefix
+        let second = repo.graph.hashes[secondRow]
+        history.showSearch(String(second.hex.prefix(7)))
+        await UI.wait("hash match") { history.testMatchCount == 1 }
+        #expect(history.testSelectedHash == second)
+
+        // File history: commits that touched docs/notes.md, with that file selected.
+        let notes = try #require(repo.localBranches.first { $0.name == "feature" }.flatMap { Hash20($0.target) })
+        wc.showFileHistory("docs/notes.md")
+        await UI.wait("file history") { history.testSelectedHash == notes }
+        #expect(history.testMatchCount == 1)
+        await UI.wait("file preselected") { history.detail.testSelectedFile == "docs/notes.md" }
+        history.showSearch("file:a.txt")
+        await UI.wait("a.txt history") { history.testMatchCount == 2 }
+        UI.snapshot(window, "file-history")
+
+        history.closeSearch(nil)
+        #expect(!history.testSearchVisible)
+        #expect(!history.testIsDimmed(row: secondRow))
+        #expect(wc.state.historySearch == nil)
+        window.close()
+    }
 }
 

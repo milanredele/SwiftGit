@@ -459,8 +459,7 @@ final class Repository {
             // Date order by default (children still always above parents);
             // topological order groups each branch's commits together.
             let order = UserDefaults.standard.bool(forKey: Repository.topoOrderKey) ? "--topo-order" : "--date-order"
-            var args = ["log", "--branches", "--remotes", "--tags", order, "--format=%H %P"]
-            if status.headOID != nil { args.append("HEAD") }
+            let args = ["log"] + graphRevisions + [order, "--format=%H %P"]
             let builder = GraphBuilder()
             let r = await git.run(args, onStdout: { data in builder.feed(data) })
             let newGraph: CommitGraph = await Task.detached { builder.finish() }.value
@@ -470,6 +469,65 @@ final class Repository {
                 notify(.graph)
             }
         } while graphReloadAgain
+    }
+
+    /// The commits the history shows: all branches, remote branches, tags and HEAD.
+    var graphRevisions: [String] {
+        ["--branches", "--remotes", "--tags"] + (status.headOID != nil ? ["HEAD"] : [])
+    }
+
+    /// What a history search looks for.
+    enum HistoryQuery: Equatable {
+        /// Message or author text (case-insensitive), or a commit hash prefix.
+        case text(String)
+        /// Commits that changed this path (following renames).
+        case file(String)
+
+        static let filePrefix = "file:"
+
+        init?(_ input: String) {
+            let s = input.trimmingCharacters(in: .whitespaces)
+            if s.lowercased().hasPrefix(HistoryQuery.filePrefix) {
+                let path = s.dropFirst(HistoryQuery.filePrefix.count).trimmingCharacters(in: .whitespaces)
+                guard !path.isEmpty else { return nil }
+                self = .file(path)
+            } else {
+                guard !s.isEmpty else { return nil }
+                self = .text(s)
+            }
+        }
+
+        var filePath: String? { if case .file(let p) = self { return p } else { return nil } }
+    }
+
+    /// Commits of the history that match `query`.
+    func searchHistory(_ query: HistoryQuery) async -> Set<Hash20> {
+        var result = Set<Hash20>()
+        func collect(_ r: RunResult) {
+            guard r.ok else { return }
+            for line in r.output.split(separator: "\n") {
+                if let h = Hash20(String(line)) { result.insert(h) }
+            }
+        }
+        switch query {
+        case .text(let text):
+            async let messages = git.run(["log"] + graphRevisions + ["--format=%H", "-i", "-F", "--grep=\(text)"])
+            async let authors = git.run(["log"] + graphRevisions + ["--format=%H", "-i", "-F", "--author=\(text)"])
+            let (m, a) = await (messages, authors)
+            collect(m)
+            collect(a)
+            let lower = text.lowercased()
+            if lower.count >= 4, lower.count <= 40, lower.allSatisfy({ $0.isHexDigit }) {
+                for h in graph.hashes where h.hex.hasPrefix(lower) { result.insert(h) }
+            }
+        case .file(let path):
+            // --follow tracks renames but only works for a single file, not a directory.
+            var isDir: ObjCBool = false
+            let exists = FileManager.default.fileExists(atPath: root.appendingPathComponent(path).path, isDirectory: &isDir)
+            let follow = !(exists && isDir.boolValue) && !path.hasSuffix("/")
+            collect(await git.run(["log"] + graphRevisions + ["--format=%H"] + (follow ? ["--follow"] : []) + ["--", path]))
+        }
+        return result
     }
 
     private func detectOperationState() -> OperationState {

@@ -1,7 +1,7 @@
 import AppKit
 
 /// Commit graph + log on top, commit details and diff below.
-final class HistoryViewController: NSViewController, NSTableViewDataSource, NSTableViewDelegate, NSMenuDelegate {
+final class HistoryViewController: NSViewController, NSTableViewDataSource, NSTableViewDelegate, NSMenuDelegate, NSSearchFieldDelegate {
     let repository: Repository
     let state: TabState
     weak var actions: RepoWindowController?
@@ -15,6 +15,20 @@ final class HistoryViewController: NSViewController, NSTableViewDataSource, NSTa
     private let splitRules = SplitRules(minFirst: 120, minSecond: 200, initial: { $0 * 0.45 })
     private var graphColumn: NSTableColumn!
     private var visibleCheckTask: Task<Void, Never>?
+
+    // Search bar (⌘F): matches stay in the graph, everything else is dimmed.
+    private let searchBar = NSStackView()
+    private let searchField = NSSearchField()
+    private let matchLabel = makeLabel("", font: .systemFont(ofSize: 11), color: .secondaryLabelColor)
+    private let prevButton = NSButton()
+    private let nextButton = NSButton()
+    private let doneButton = NSButton(title: "Done", target: nil, action: nil)
+    private var searchTask: Task<Void, Never>?
+    private var matchSet = Set<Hash20>()
+    private var matchRows: [Int] = []
+    private var matchIndex = -1
+    private var searchActive: Bool { state.historySearch != nil && query != nil }
+    private var query: Repository.HistoryQuery? { state.historySearch.flatMap(Repository.HistoryQuery.init) }
 
     init(repository: Repository, state: TabState, actions: RepoWindowController?) {
         self.repository = repository
@@ -60,25 +74,196 @@ final class HistoryViewController: NSViewController, NSTableViewDataSource, NSTa
         table.autosaveTableColumns = true
 
         scroll = makeScrollingTable(table)
-        scroll.translatesAutoresizingMaskIntoConstraints = true
+        scroll.translatesAutoresizingMaskIntoConstraints = false
+
+        searchField.placeholderString = "Search messages, authors, hashes — or file:path for a file’s history"
+        searchField.delegate = self
+        searchField.sendsSearchStringImmediately = false
+        searchField.sendsWholeSearchString = false
+        prevButton.image = NSImage(systemSymbolName: "chevron.up", accessibilityDescription: "Previous match")
+        nextButton.image = NSImage(systemSymbolName: "chevron.down", accessibilityDescription: "Next match")
+        for (b, sel) in [(prevButton, #selector(previousMatch(_:))), (nextButton, #selector(nextMatch(_:)))] {
+            b.bezelStyle = .texturedRounded
+            b.isBordered = true
+            b.target = self
+            b.action = sel
+        }
+        prevButton.toolTip = "Previous match (⇧↩ or ⇧⌘G)"
+        nextButton.toolTip = "Next match (↩ or ⌘G)"
+        doneButton.bezelStyle = .texturedRounded
+        doneButton.target = self
+        doneButton.action = #selector(closeSearch(_:))
+        searchBar.setViews([searchField, matchLabel, prevButton, nextButton, doneButton], in: .leading)
+        searchBar.orientation = .horizontal
+        searchBar.spacing = 6
+        searchBar.edgeInsets = NSEdgeInsets(top: 4, left: 8, bottom: 4, right: 8)
+        searchBar.translatesAutoresizingMaskIntoConstraints = false
+        searchBar.isHidden = state.historySearch == nil
+        searchField.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        matchLabel.setContentCompressionResistancePriority(.required, for: .horizontal)
+
+        let top = NSView()
+        top.addSubview(searchBar)
+        top.addSubview(scroll)
+        let barHeight = searchBar.heightAnchor.constraint(equalToConstant: 0)
+        barHeight.priority = .defaultLow
+        NSLayoutConstraint.activate([
+            searchBar.topAnchor.constraint(equalTo: top.topAnchor),
+            searchBar.leadingAnchor.constraint(equalTo: top.leadingAnchor),
+            searchBar.trailingAnchor.constraint(equalTo: top.trailingAnchor),
+            scroll.leadingAnchor.constraint(equalTo: top.leadingAnchor),
+            scroll.trailingAnchor.constraint(equalTo: top.trailingAnchor),
+            scroll.bottomAnchor.constraint(equalTo: top.bottomAnchor),
+        ])
+        scrollTopToBar = scroll.topAnchor.constraint(equalTo: searchBar.bottomAnchor)
+        scrollTopToView = scroll.topAnchor.constraint(equalTo: top.topAnchor)
+        (searchBar.isHidden ? scrollTopToView : scrollTopToBar)?.isActive = true
 
         split.isVertical = false
         split.dividerStyle = .thin
         split.autosaveName = "HistorySplit"
         split.delegate = splitRules
         addChild(detail)
-        split.addArrangedSubview(scroll)
+        detail.onShowFileHistory = { [weak self] path in self?.showSearch(Repository.HistoryQuery.filePrefix + path) }
+        split.addArrangedSubview(top)
         split.addArrangedSubview(detail.view)
         split.setHoldingPriority(.init(260), forSubviewAt: 0)
         split.setHoldingPriority(.init(250), forSubviewAt: 1)
         view = split
         updateGraphColumn()
+        if let text = state.historySearch { searchField.stringValue = text; runSearch() }
         scroll.contentView.postsBoundsChangedNotifications = true
         NotificationCenter.default.addObserver(self, selector: #selector(historyScrolled(_:)),
                                                name: NSView.boundsDidChangeNotification, object: scroll.contentView)
     }
 
     @objc private func historyScrolled(_ n: Notification) { scheduleVisibleMergeCheck() }
+
+    private var scrollTopToBar: NSLayoutConstraint?
+    private var scrollTopToView: NSLayoutConstraint?
+
+    // MARK: Search
+
+    /// Opens the search bar (optionally with `text`) and focuses it.
+    func showSearch(_ text: String? = nil) {
+        if let text { searchField.stringValue = text }
+        state.historySearch = searchField.stringValue
+        searchBar.isHidden = false
+        scrollTopToView?.isActive = false
+        scrollTopToBar?.isActive = true
+        view.window?.makeFirstResponder(searchField)
+        runSearch()
+    }
+
+    @objc func closeSearch(_ sender: Any?) {
+        searchTask?.cancel()
+        state.historySearch = nil
+        detail.preferredPath = nil
+        searchField.stringValue = ""
+        searchBar.isHidden = true
+        scrollTopToBar?.isActive = false
+        scrollTopToView?.isActive = true
+        matchSet = []
+        matchRows = []
+        matchIndex = -1
+        reloadVisible()
+        view.window?.makeFirstResponder(table)
+    }
+
+    func controlTextDidChange(_ obj: Notification) {
+        guard (obj.object as? NSSearchField) === searchField else { return }
+        state.historySearch = searchField.stringValue
+        runSearch(debounce: true)
+    }
+
+    func control(_ control: NSControl, textView: NSTextView, doCommandBy selector: Selector) -> Bool {
+        guard control === searchField else { return false }
+        switch selector {
+        case #selector(NSResponder.insertNewline(_:)):
+            moveToMatch(forward: !(NSApp.currentEvent?.modifierFlags.contains(.shift) ?? false))
+            return true
+        case #selector(NSResponder.cancelOperation(_:)):
+            closeSearch(nil)
+            return true
+        default:
+            return false
+        }
+    }
+
+    private func runSearch(debounce: Bool = false) {
+        searchTask?.cancel()
+        guard let q = query else {
+            matchSet = []
+            matchRows = []
+            matchIndex = -1
+            matchLabel.stringValue = ""
+            detail.preferredPath = nil
+            reloadVisible()
+            return
+        }
+        detail.preferredPath = q.filePath
+        matchLabel.stringValue = "Searching…"
+        searchTask = Task { [weak self] in
+            if debounce { try? await Task.sleep(nanoseconds: 250_000_000) }
+            guard let self, !Task.isCancelled else { return }
+            let found = await self.repository.searchHistory(q)
+            guard !Task.isCancelled, self.query == q else { return }
+            self.applyMatches(found, jump: true)
+        }
+    }
+
+    private func applyMatches(_ found: Set<Hash20>, jump: Bool) {
+        matchSet = found
+        let hashes = repository.graph.hashes
+        matchRows = found.isEmpty ? [] : hashes.indices.filter { found.contains(hashes[$0]) }
+        let selected = table.selectedRow
+        matchIndex = matchRows.firstIndex { $0 >= selected } ?? (matchRows.isEmpty ? -1 : 0)
+        reloadAllVisibleRows()
+        if jump, matchIndex >= 0, !matchRows.contains(selected) { selectMatch() }
+        updateMatchLabel()
+    }
+
+    private func updateMatchLabel() {
+        if matchRows.isEmpty {
+            matchLabel.stringValue = query == nil ? "" : "No matches"
+        } else if let i = matchRows.firstIndex(of: table.selectedRow) {
+            matchLabel.stringValue = "\(i + 1) of \(matchRows.count)"
+        } else {
+            matchLabel.stringValue = "\(matchRows.count) match\(matchRows.count == 1 ? "" : "es")"
+        }
+    }
+
+    private func selectMatch() {
+        guard matchIndex >= 0, matchIndex < matchRows.count else { return }
+        let row = matchRows[matchIndex]
+        select(hash: repository.graph.hashes[row], scroll: true)
+        updateMatchLabel()
+    }
+
+    func moveToMatch(forward: Bool) {
+        guard !matchRows.isEmpty else { NSSound.beep(); return }
+        let selected = table.selectedRow
+        if forward {
+            matchIndex = matchRows.firstIndex { $0 > selected } ?? 0
+        } else {
+            matchIndex = matchRows.lastIndex { $0 < selected } ?? (matchRows.count - 1)
+        }
+        selectMatch()
+    }
+
+    @objc private func nextMatch(_ sender: Any?) { moveToMatch(forward: true) }
+    @objc private func previousMatch(_ sender: Any?) { moveToMatch(forward: false) }
+
+    private func reloadAllVisibleRows() {
+        reloadVisible()
+    }
+
+    var testMatchCount: Int { matchRows.count }
+    var testMatchLabel: String { matchLabel.stringValue }
+    var testSearchVisible: Bool { !searchBar.isHidden }
+    func testIsDimmed(row: Int) -> Bool {
+        (table.view(atColumn: 1, row: row, makeIfNecessary: true)?.alphaValue ?? 1) < 1
+    }
 
     /// Squash/rebase detection only for branches currently on screen.
     private func scheduleVisibleMergeCheck() {
@@ -123,6 +308,7 @@ final class HistoryViewController: NSViewController, NSTableViewDataSource, NSTa
             suppressSelection = false
             followHeadIfChanged()
             scheduleVisibleMergeCheck()
+            if searchActive { runSearch() }
         case .summaries(let block):
             let start = block * SummaryCache.blockSize
             let range = start..<min(repository.graph.count, start + SummaryCache.blockSize)
@@ -192,6 +378,13 @@ final class HistoryViewController: NSViewController, NSTableViewDataSource, NSTa
     }
 
     func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
+        let v = cellView(tableView, tableColumn, row)
+        let g = repository.graph
+        v?.alphaValue = searchActive && row < g.count && !matchSet.contains(g.hashes[row]) ? 0.3 : 1
+        return v
+    }
+
+    private func cellView(_ tableView: NSTableView, _ tableColumn: NSTableColumn?, _ row: Int) -> NSView? {
         guard let tableColumn else { return nil }
         let g = repository.graph
         guard row < g.count else { return nil }
@@ -254,6 +447,7 @@ final class HistoryViewController: NSViewController, NSTableViewDataSource, NSTa
         }
         let hash = repository.graph.hashes[row]
         state.selectedCommit = hash
+        if searchActive { updateMatchLabel() }
         actions?.highlightBranch(of: repository.decorations[hash] ?? [])
         selectTask?.cancel()
         selectTask = Task { [weak self] in
@@ -408,6 +602,9 @@ final class CommitDetailViewController: NSViewController, NSTableViewDataSource,
     private let left = NSSplitView()
     private let splitRules = SplitRules(minFirst: 220, minSecond: 300, initial: { _ in 320 })
     private let leftRules = SplitRules(minFirst: 60, minSecond: 80, initial: { _ in 130 })
+    /// File to select when a commit is shown (file history search).
+    var preferredPath: String?
+    var onShowFileHistory: ((String) -> Void)?
 
     init(repository: Repository) {
         self.repository = repository
@@ -436,6 +633,10 @@ final class CommitDetailViewController: NSViewController, NSTableViewDataSource,
         files.dataSource = self
         files.delegate = self
         files.columnAutoresizingStyle = .uniformColumnAutoresizingStyle
+        let fileMenu = NSMenu()
+        fileMenu.delegate = fileMenuDelegate
+        fileMenuDelegate.build = { [weak self] menu in self?.buildFileMenu(menu) }
+        files.menu = fileMenu
         let filesScroll = makeScrollingTable(files)
         filesScroll.translatesAutoresizingMaskIntoConstraints = true
 
@@ -482,7 +683,11 @@ final class CommitDetailViewController: NSViewController, NSTableViewDataSource,
             self.renderHeader()
             self.files.reloadData()
             if let d, !d.files.isEmpty {
-                self.files.selectRowIndexes(IndexSet(integer: 0), byExtendingSelection: false)
+                let preferred = self.preferredPath.flatMap { p in
+                    d.files.firstIndex { $0.path == p || $0.origPath == p || $0.path.hasPrefix(p.hasSuffix("/") ? p : p + "/") }
+                }
+                self.files.selectRowIndexes(IndexSet(integer: preferred ?? 0), byExtendingSelection: false)
+                self.files.scrollRowToVisible(preferred ?? 0)
             } else {
                 self.diffVC.show(.none)
             }
@@ -515,6 +720,36 @@ final class CommitDetailViewController: NSViewController, NSTableViewDataSource,
             out.append(NSAttributedString(string: "Parents: " + d.parents.map { String($0.prefix(8)) }.joined(separator: ", "), attributes: meta))
         }
         headerText.textStorage?.setAttributedString(out)
+    }
+
+    private let fileMenuDelegate = MenuBuilder()
+
+    private func buildFileMenu(_ menu: NSMenu) {
+        let row = files.clickedRow
+        guard let d = detail, row >= 0, row < d.files.count else { return }
+        let path = d.files[row].path
+        let history = menu.addItem(withTitle: "Show File History", action: #selector(showFileHistoryItem(_:)), keyEquivalent: "")
+        history.target = self
+        history.representedObject = path
+        let copy = menu.addItem(withTitle: "Copy Path", action: #selector(copyPathItem(_:)), keyEquivalent: "")
+        copy.target = self
+        copy.representedObject = path
+    }
+
+    @objc private func showFileHistoryItem(_ item: NSMenuItem) {
+        if let p = item.representedObject as? String { onShowFileHistory?(p) }
+    }
+
+    @objc private func copyPathItem(_ item: NSMenuItem) {
+        guard let p = item.representedObject as? String else { return }
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(p, forType: .string)
+    }
+
+    var testSelectedFile: String? {
+        let r = files.selectedRow
+        guard let d = detail, r >= 0, r < d.files.count else { return nil }
+        return d.files[r].path
     }
 
     func numberOfRows(in tableView: NSTableView) -> Int { detail?.files.count ?? 0 }
@@ -562,4 +797,13 @@ func fileTitle(_ c: FileChange) -> NSAttributedString {
         out.append(NSAttributedString(string: "  ← " + orig, attributes: [.font: NSFont.systemFont(ofSize: 11), .foregroundColor: NSColor.tertiaryLabelColor]))
     }
     return out
+}
+
+/// NSMenu delegate that rebuilds the menu with a closure each time it opens.
+final class MenuBuilder: NSObject, NSMenuDelegate {
+    var build: ((NSMenu) -> Void)?
+    func menuNeedsUpdate(_ menu: NSMenu) {
+        menu.removeAllItems()
+        build?(menu)
+    }
 }
