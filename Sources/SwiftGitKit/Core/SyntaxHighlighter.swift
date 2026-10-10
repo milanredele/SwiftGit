@@ -70,6 +70,10 @@ final class SyntaxHighlighter: @unchecked Sendable {
 
     private let lock = NSLock()
     private var specs: [String: Spec] = [:]
+    /// Most recently used last. Compiled queries can be several MB (Swift ≈ 6 MB),
+    /// so only the last few languages are kept; others are recompiled on demand.
+    private var recent: [String] = []
+    static let cachedLanguages = 2
     private var failed = Set<String>()
 
     // MARK: Language detection
@@ -154,7 +158,11 @@ final class SyntaxHighlighter: @unchecked Sendable {
     private func spec(_ id: String) -> Spec? {
         lock.lock()
         defer { lock.unlock() }
-        if let s = specs[id] { return s }
+        if let s = specs[id] {
+            recent.removeAll { $0 == id }
+            recent.append(id)
+            return s
+        }
         if failed.contains(id) { return nil }
         guard let def = definition(id), let ptr = def.0 else { failed.insert(id); return nil }
         let parts = def.1
@@ -169,6 +177,8 @@ final class SyntaxHighlighter: @unchecked Sendable {
             let query = try Query(language: language, data: Data(text.utf8))
             let s = Spec(language: language, query: query)
             specs[id] = s
+            recent.append(id)
+            while recent.count > SyntaxHighlighter.cachedLanguages { specs[recent.removeFirst()] = nil }
             return s
         } catch {
             NSLog("SwiftGit: highlight query for \(id) failed: \(error)")

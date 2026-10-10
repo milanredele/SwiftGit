@@ -44,6 +44,23 @@ A lightweight, native macOS git client built with plain AppKit on top of the
   remote branch diverged and offers a force push (with lease) or a pull.
 - The active `gh` account (and your organization, when it owns the repository)
   is shown in the toolbar; its menu switches between logged-in accounts.
+- **Undo** the last operation (⌥⌘Z or the toolbar): commit, amend, merge,
+  rebase, pull, cherry-pick, revert, reset, checkout, branch create / rename /
+  delete.
+- **Recoverable discards:** discarded files, hunks and lines (and hard resets)
+  are kept for 14 days under Repository › Recover Discarded Changes…
+  (a hidden reflog, not the stash list; expired automatically).
+- **Conflicts:** each conflicted file says what happened and offers Keep /
+  Take one side, Merge Tool, Edit File and Mark Resolved.
+- **Edit commits** (simple interactive rebase): keep, reword, squash, fixup,
+  drop and reorder the commits from a chosen one up to HEAD.
+- **Search** the history (⌘F) by message, author or hash, and show a file's
+  history (`file:path`, or right-click a file).
+- Pull requests are shown next to their branches in the sidebar (number,
+  draft, checks, review state).
+- Quiet fetch when a tab gets focus; pulls blocked by local changes offer
+  "Stash and Pull". Settings (⌘,) for pull mode, auto-stash, fetching and
+  the Claude model.
 - Opens your configured `git difftool` / `git mergetool` when you want them.
 
 ## Requirements

@@ -5,7 +5,7 @@ import Testing
 /// Drives the real window controllers in an offscreen window (no screen
 /// access needed), asserts on the view state and writes PNG snapshots.
 @MainActor
-@Suite("UI", .serialized)
+@Suite("UI", .serialized, .disabled(if: MemoryTests.measuring, "memory measurement run"))
 struct UITests {
     private func openWindow() async throws -> (Repository, RepoWindowController, NSWindow) {
         UI.setUpApp()

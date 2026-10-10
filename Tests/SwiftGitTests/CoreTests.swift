@@ -3,7 +3,7 @@ import Testing
 @testable import SwiftGitKit
 
 @MainActor
-@Suite("Core")
+@Suite("Core", .disabled(if: MemoryTests.measuring, "memory measurement run"))
 struct CoreTests {
     @Test func statusParsing() throws {
         let raw = "# branch.oid abc\0# branch.head main\0# branch.upstream origin/main\0# branch.ab +2 -1\0"
