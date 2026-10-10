@@ -88,6 +88,7 @@ final class RepoWindowController: NSWindowController, NSWindowDelegate, NSToolba
     func windowDidBecomeKey(_ notification: Notification) {
         GitHubAccounts.shared.refresh()
         if Settings.fetchOnFocus { repository.fetchInBackground() }
+        repository.loadPullRequests()
     }
 
     func windowWillClose(_ notification: Notification) {
@@ -716,7 +717,10 @@ final class RepoWindowController: NSWindowController, NSWindowDelegate, NSToolba
         guard let window, window.attachedSheet == nil else { return }
         let sheet = PullRequestSheet(repository: repository, head: head)
         prSheet = sheet
-        sheet.onFinish = { [weak self] in self?.prSheet = nil }
+        sheet.onFinish = { [weak self] in
+            self?.prSheet = nil
+            self?.repository.loadPullRequests(minInterval: 0)
+        }
         sheet.present(on: window)
     }
 }

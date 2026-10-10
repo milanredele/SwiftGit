@@ -6,6 +6,7 @@ enum RepoChange {
     case graph
     case activity
     case summaries(Int)
+    case pullRequests
 }
 
 @MainActor
@@ -67,6 +68,10 @@ final class Repository {
     private var backgroundFetchTask: Task<Void, Never>?
     private var lastBackgroundFetch = Date.distantPast
     private(set) var lastBackgroundFetchError: String?
+    /// Open pull requests by head branch name (GitHub remotes only).
+    private(set) var pullRequests: [String: PullRequestBadge] = [:]
+    private var pullRequestTask: Task<Void, Never>?
+    private var lastPullRequestLoad = Date.distantPast
 
     /// Most recently updated first; merged / upstream-deleted branches last.
     var localBranches: [RefInfo] {
@@ -114,7 +119,10 @@ final class Repository {
         watcher = RepoWatcher(paths: paths) { [weak self] events in
             self?.handleFileEvents(events)
         }
-        Task { await refreshAll() }
+        Task {
+            await refreshAll()
+            loadPullRequests()
+        }
     }
 
     func stop() {
@@ -712,6 +720,27 @@ final class Repository {
     }
 
     var isFetchingInBackground: Bool { backgroundFetchTask != nil }
+
+    /// Reloads the open pull requests (one gh call), at most once per `minInterval`.
+    func loadPullRequests(minInterval: TimeInterval = Settings.focusFetchInterval) {
+        guard pullRequestTask == nil, GitHub.executable != nil, let gh = gitHubRemote?.repo,
+              Date().timeIntervalSince(lastPullRequestLoad) >= minInterval else { return }
+        lastPullRequestLoad = Date()
+        pullRequestTask = Task {
+            let badges = try? await GitHub.openPullRequestBadges(gh)
+            pullRequestTask = nil
+            guard let badges, badges != pullRequests else { return }
+            pullRequests = badges
+            notify(.pullRequests)
+        }
+    }
+
+    var isLoadingPullRequests: Bool { pullRequestTask != nil }
+
+    func testSetPullRequests(_ badges: [String: PullRequestBadge]) {
+        pullRequests = badges
+        notify(.pullRequests)
+    }
 
     func pull(rebase: Bool? = nil) async {
         let mode: PullMode = rebase == true ? .rebase : rebase == false ? .merge : Settings.pullMode

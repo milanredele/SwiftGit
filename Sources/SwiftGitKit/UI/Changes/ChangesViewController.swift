@@ -202,7 +202,7 @@ final class ChangesViewController: NSViewController, NSTableViewDataSource, NSTa
         case .status:
             reloadLists()
             updateCommitControls()
-        case .refs, .graph, .summaries, .activity:
+        case .refs, .graph, .summaries, .activity, .pullRequests:
             break
         }
     }

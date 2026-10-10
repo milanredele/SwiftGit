@@ -69,6 +69,7 @@ final class SidebarViewController: NSViewController, NSOutlineViewDataSource, NS
     func handle(_ change: RepoChange) {
         switch change {
         case .refs, .status: rebuild()
+        case .pullRequests: outline.reloadData()
         default: break
         }
     }
@@ -241,10 +242,48 @@ final class SidebarViewController: NSViewController, NSOutlineViewDataSource, NS
                 title.append(NSAttributedString(string: extra, attributes: [
                     .font: NSFont.systemFont(ofSize: 11), .foregroundColor: NSColor.tertiaryLabelColor]))
             }
+            if let pr = repository.pullRequests[ref.name] {
+                title.append(Self.badge(pr))
+                tip = pr.summary + (tip.map { "\n" + $0 } ?? "") + "\nRight-click › Open Pull Request"
+            }
         }
         v.textField?.attributedStringValue = title
         v.toolTip = tip
         return v
+    }
+
+    /// Text shown for the row of a branch (tests).
+    func testRowText(named name: String) -> String? {
+        for row in 0..<outline.numberOfRows {
+            guard let n = outline.item(atRow: row) as? SidebarNode, n.ref?.name == name,
+                  let v = outline.view(atColumn: 0, row: row, makeIfNecessary: true) as? NSTableCellView else { continue }
+            return v.textField?.stringValue
+        }
+        return nil
+    }
+
+    /// "  #42 draft ● ✓" — number, draft flag, check result dot, review state.
+    static func badge(_ pr: PullRequestBadge) -> NSAttributedString {
+        let small = NSFont.systemFont(ofSize: 11, weight: .medium)
+        let s = NSMutableAttributedString(string: "  #\(pr.number)", attributes: [.font: small, .foregroundColor: NSColor.systemBlue])
+        if pr.isDraft {
+            s.append(NSAttributedString(string: " draft", attributes: [.font: NSFont.systemFont(ofSize: 11), .foregroundColor: NSColor.tertiaryLabelColor]))
+        }
+        let dot: NSColor? = {
+            switch pr.checks {
+            case .none: return nil
+            case .pending: return .systemOrange
+            case .passing: return .systemGreen
+            case .failing: return .systemRed
+            }
+        }()
+        if let dot { s.append(NSAttributedString(string: " ●", attributes: [.font: NSFont.systemFont(ofSize: 9), .foregroundColor: dot])) }
+        switch pr.review {
+        case .approved: s.append(NSAttributedString(string: " ✓", attributes: [.font: small, .foregroundColor: NSColor.systemGreen]))
+        case .changesRequested: s.append(NSAttributedString(string: " ✎", attributes: [.font: small, .foregroundColor: NSColor.systemOrange]))
+        default: break
+        }
+        return s
     }
 
     /// Selects the sidebar entry for one of `refs` without moving the history.
@@ -328,7 +367,12 @@ final class SidebarViewController: NSViewController, NSOutlineViewDataSource, NS
             if !ref.isHead { add("Delete…", #selector(menuDelete(_:))) }
             menu.addItem(.separator())
             add("Push", #selector(menuPush(_:)))
-            add("Create Pull Request…", #selector(menuPullRequest(_:)))
+            if let pr = repository.pullRequests[n.ref?.name ?? ""] {
+                add("Open Pull Request #\(pr.number)", #selector(menuOpenPullRequest(_:)))
+                add("Update Pull Request #\(pr.number)…", #selector(menuPullRequest(_:)))
+            } else {
+                add("Create Pull Request…", #selector(menuPullRequest(_:)))
+            }
             menu.addItem(.separator())
             add("Copy Name", #selector(menuCopyName(_:)))
         case .remote:
@@ -356,6 +400,11 @@ final class SidebarViewController: NSViewController, NSOutlineViewDataSource, NS
     }
 
     private func node(_ item: NSMenuItem) -> SidebarNode? { item.representedObject as? SidebarNode }
+
+    @objc private func menuOpenPullRequest(_ item: NSMenuItem) {
+        guard let name = node(item)?.ref?.name, let s = repository.pullRequests[name]?.url, let url = URL(string: s) else { return }
+        NSWorkspace.shared.open(url)
+    }
 
     @objc private func menuCheckout(_ item: NSMenuItem) {
         if let ref = node(item)?.ref { actions?.checkout(ref) }

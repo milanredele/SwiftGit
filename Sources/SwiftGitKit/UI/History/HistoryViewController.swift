@@ -137,7 +137,7 @@ final class HistoryViewController: NSViewController, NSTableViewDataSource, NSTa
             reloadVisible()
             followHeadIfChanged()
             if case .refs = change { scheduleVisibleMergeCheck() }
-        case .activity:
+        case .activity, .pullRequests:
             break
         }
     }

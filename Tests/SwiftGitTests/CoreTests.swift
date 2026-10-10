@@ -640,5 +640,29 @@ struct CoreTests {
         Settings.pullMode = .fastForwardOnly
         #expect(suite.string(forKey: Settings.Key.pullMode) == "fastForwardOnly")
     }
+
+    @Test func pullRequestBadgeParsing() {
+        let tsv = "topic\t42\ttrue\tREVIEW_REQUIRED\thttps://github.com/acme/w/pull/42\tSUCCESS,,SKIPPED\n"
+            + "done\t7\tfalse\tAPPROVED\thttps://github.com/acme/w/pull/7\tSUCCESS,NEUTRAL\n"
+            + "broken\t8\tfalse\tCHANGES_REQUESTED\thttps://github.com/acme/w/pull/8\tSUCCESS,FAILURE\n"
+            + "bare\t9\tfalse\t\thttps://github.com/acme/w/pull/9\t\n"
+            + "bare\t3\tfalse\t\thttps://github.com/acme/w/pull/3\t\n"
+        let b = GitHub.parseBadges(tsv)
+        #expect(b["topic"] == PullRequestBadge(number: 42, url: "https://github.com/acme/w/pull/42", isDraft: true,
+                                               review: .required, checks: .pending))
+        #expect(b["done"]?.checks == .passing && b["done"]?.review == .approved)
+        #expect(b["broken"]?.checks == .failing && b["broken"]?.review == .changesRequested)
+        #expect(b["bare"]?.number == 9 && b["bare"]?.checks == PullRequestBadge.Checks.none)
+        #expect(b["topic"]?.summary == "Pull request #42 (draft), checks running, review required")
+        #expect(PullRequestBadge.rollup(["COMPLETED_SUCCESS_UNKNOWN"]) == .passing)
+    }
+
+    /// Runs the real gh query against this repository's GitHub remote (diagnostic).
+    @Test func pullRequestBadgesFromInstalledGh() async throws {
+        guard GitHub.executable != nil else { return }
+        let r = await GitHub.run(["pr", "list", "--repo", "milanredele/SwiftGit", "--state", "open", "--limit", "5",
+                                  "--json", "headRefName,number,isDraft,reviewDecision,url,statusCheckRollup", "--jq", GitHub.badgeJQ], cwd: nil)
+        print("DIAG gh pr badges:", r.ok ? "ok \(GitHub.parseBadges(r.output).count) open" : r.errorMessage)
+    }
 }
 

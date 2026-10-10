@@ -195,6 +195,34 @@ enum GitHub {
         var draft: Bool
     }
 
+    // MARK: Open pull requests per branch (sidebar badges)
+
+    /// jq program: one tab-separated line per open PR, check results comma-joined.
+    static let badgeJQ = #".[] | [.headRefName, (.number|tostring), (.isDraft|tostring), (.reviewDecision // ""), .url, ([.statusCheckRollup[]? | (.conclusion // .state // "")] | join(","))] | @tsv"#
+
+    static func parseBadges(_ text: String) -> [String: PullRequestBadge] {
+        var result: [String: PullRequestBadge] = [:]
+        for line in text.split(separator: "\n") {
+            let f = line.split(separator: "\t", omittingEmptySubsequences: false).map(String.init)
+            guard f.count >= 5, let number = Int(f[1]) else { continue }
+            let checks = f.count > 5 ? f[5].split(separator: ",", omittingEmptySubsequences: false).map(String.init) : []
+            let badge = PullRequestBadge(number: number, url: f[4], isDraft: f[2] == "true",
+                                         review: PullRequestBadge.Review(rawValue: f[3]) ?? .none,
+                                         checks: PullRequestBadge.rollup(f.count > 5 && !f[5].isEmpty ? checks : []))
+            // Several PRs from one branch (e.g. forks): keep the newest (highest number).
+            if let existing = result[f[0]], existing.number > number { continue }
+            result[f[0]] = badge
+        }
+        return result
+    }
+
+    static func openPullRequestBadges(_ repo: GitHubRepo) async throws -> [String: PullRequestBadge] {
+        let r = await run(["pr", "list", "--repo", repo.slug, "--state", "open", "--limit", "100",
+                           "--json", "headRefName,number,isDraft,reviewDecision,url,statusCheckRollup", "--jq", badgeJQ], cwd: nil)
+        guard r.ok else { throw GitHubError(message: r.errorMessage) }
+        return parseBadges(r.output)
+    }
+
     struct ExistingPullRequest: Equatable {
         var number: Int
         var url: String
@@ -297,5 +325,44 @@ enum GitHub {
         guard r.ok else { throw GitHubError(message: friendlyError(r.errorMessage, head: req.head, base: req.base)) }
         let lines = r.output.split(separator: "\n").map { $0.trimmingCharacters(in: .whitespaces) }
         return lines.last(where: { $0.hasPrefix("https://") }) ?? r.output.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+}
+
+/// What the sidebar shows next to a branch that has an open pull request.
+struct PullRequestBadge: Equatable {
+    enum Review: String { case none = "", approved = "APPROVED", changesRequested = "CHANGES_REQUESTED", required = "REVIEW_REQUIRED" }
+    enum Checks { case none, pending, passing, failing }
+
+    var number: Int
+    var url: String
+    var isDraft: Bool
+    var review: Review
+    var checks: Checks
+
+    /// Combines check-run conclusions / status states into one result.
+    static func rollup(_ states: [String]) -> Checks {
+        guard !states.isEmpty else { return .none }
+        let failing: Set<String> = ["FAILURE", "ERROR", "CANCELLED", "TIMED_OUT", "ACTION_REQUIRED", "STARTUP_FAILURE"]
+        let pending: Set<String> = ["", "PENDING", "EXPECTED", "IN_PROGRESS", "QUEUED", "WAITING", "REQUESTED"]
+        if states.contains(where: { failing.contains($0.uppercased()) }) { return .failing }
+        if states.contains(where: { pending.contains($0.uppercased()) }) { return .pending }
+        return .passing
+    }
+
+    var summary: String {
+        var parts = ["Pull request #\(number)" + (isDraft ? " (draft)" : "")]
+        switch checks {
+        case .none: break
+        case .pending: parts.append("checks running")
+        case .passing: parts.append("checks passed")
+        case .failing: parts.append("checks failing")
+        }
+        switch review {
+        case .approved: parts.append("approved")
+        case .changesRequested: parts.append("changes requested")
+        case .required: parts.append("review required")
+        case .none: break
+        }
+        return parts.joined(separator: ", ")
     }
 }

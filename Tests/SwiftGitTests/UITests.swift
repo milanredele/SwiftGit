@@ -73,6 +73,13 @@ struct UITests {
         let plain = try #require(repo.graph.hashes.first { (repo.decorations[$0] ?? []).isEmpty })
         history.select(hash: plain, scroll: true)
         #expect(sidebar.testSelectedTitle == nil)
+
+        // Open pull request badge next to the branch.
+        repo.testSetPullRequests(["feature": PullRequestBadge(number: 42, url: "https://github.com/acme/w/pull/42",
+                                                              isDraft: true, review: .approved, checks: .failing)])
+        await UI.settle(window)
+        #expect(sidebar.testRowText(named: "feature")?.contains("#42 draft ● ✓") == true, "\(sidebar.testRowText(named: "feature") ?? "nil")")
+        UI.snapshot(window, "sidebar-pr-badge")
         window.close()
     }
 
