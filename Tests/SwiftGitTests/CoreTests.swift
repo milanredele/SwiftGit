@@ -664,5 +664,121 @@ struct CoreTests {
                                   "--json", "headRefName,number,isDraft,reviewDecision,url,statusCheckRollup", "--jq", GitHub.badgeJQ], cwd: nil)
         print("DIAG gh pr badges:", r.ok ? "ok \(GitHub.parseBadges(r.output).count) open" : r.errorMessage)
     }
+
+    /// main and `topic/c` both change c.md; `topic/c` also changes docs/notes.md, which main deletes.
+    private func conflictRepo() throws -> URL {
+        let dir = try Fixture.makeRepo()
+        try Fixture.git(["stash", "-q", "--include-untracked"], in: dir)
+        try Fixture.git(["switch", "-q", "-c", "topic/c"], in: dir)
+        try Fixture.write(dir, "c.md", "topic\n")
+        try Fixture.write(dir, "docs/notes.md", "# Notes\n\nMore notes.\n")
+        try Fixture.git(["commit", "-q", "-am", "topic change"], in: dir)
+        try Fixture.git(["switch", "-q", "main"], in: dir)
+        try Fixture.write(dir, "c.md", "main\n")
+        try Fixture.git(["rm", "-q", "docs/notes.md"], in: dir)
+        try Fixture.git(["commit", "-q", "-am", "main change"], in: dir)
+        return dir
+    }
+
+    @Test func mergeConflictsCanBeResolvedPerSide() async throws {
+        let dir = try conflictRepo()
+        let repo = try await Repository.open(dir)
+        await repo.refreshAll()
+        let start = try #require(repo.status.headOID)
+        await repo.merge("topic/c")
+        #expect(repo.opState == .merging)
+        let conflicts = repo.status.conflicts
+        #expect(Set(conflicts.map(\.path)) == ["c.md", "docs/notes.md"])
+        #expect(conflicts.first { $0.path == "c.md" }?.conflictXY == "UU")
+        #expect(conflicts.first { $0.path == "docs/notes.md" }?.conflictXY == "DU")
+
+        let sides = await repo.conflictSides()
+        #expect(sides.ours == "main" && sides.theirs == "topic/c")
+        #expect(Repository.describeConflict("DU", sides) == "Deleted in main, changed in topic/c.")
+        #expect(repo.filesWithConflictMarkers(conflicts) == ["c.md"])
+
+        // Take the topic version of c.md, keep main's deletion of notes.md.
+        #expect(await repo.resolveConflicts(conflicts.filter { $0.path == "c.md" }, keeping: .theirs))
+        #expect(try String(contentsOf: dir.appendingPathComponent("c.md"), encoding: .utf8) == "topic\n")
+        #expect(await repo.resolveConflicts(conflicts.filter { $0.path == "docs/notes.md" }, keeping: .ours))
+        #expect(!FileManager.default.fileExists(atPath: dir.appendingPathComponent("docs/notes.md").path))
+        #expect(repo.status.conflicts.isEmpty)
+
+        await repo.continueOperation()
+        #expect(repo.opState == .none)
+        // The merge (stopped, then continued) can be undone as one step.
+        let undo = try #require(repo.undoCandidate)
+        #expect(undo.title == "Merge topic/c")
+        #expect(await repo.undo(undo))
+        #expect(repo.status.headOID == start)
+    }
+
+    @Test func rebaseConflictSidesAreNamed() async throws {
+        let dir = try conflictRepo()
+        try Fixture.git(["switch", "-q", "topic/c"], in: dir)
+        let repo = try await Repository.open(dir)
+        await repo.refreshAll()
+        await repo.rebase(onto: "main")
+        #expect(repo.opState == .rebasing)
+        let sides = await repo.conflictSides()
+        #expect(sides.ours == "main")
+        #expect(sides.theirs == "topic/c")
+        #expect(sides.explanation.contains("your commit"))
+        await repo.markResolved(repo.status.conflicts)
+        #expect(repo.status.conflicts.isEmpty)
+        await repo.abortOperation()
+        #expect(repo.opState == .none)
+        #expect(repo.undoCandidate == nil)
+    }
+
+    @Test func rewriteCommitsWithSimpleRebase() async throws {
+        let dir = try Fixture.makeRepo()
+        try Fixture.git(["switch", "-q", "-c", "topic/rw"], in: dir)
+        for (i, name) in ["one", "two", "three", "four"].enumerated() {
+            try Fixture.write(dir, "\(name).txt", "\(i)\n")
+            try Fixture.git(["add", "\(name).txt"], in: dir)
+            try Fixture.git(["commit", "-q", "-m", "feat: \(name)", "--", "\(name).txt"], in: dir)
+        }
+        let repo = try await Repository.open(dir)
+        await repo.refreshAll()
+        let first = try Fixture.git(["rev-parse", "HEAD~3"], in: dir).trimmingCharacters(in: .whitespacesAndNewlines)
+
+        let plan = try await repo.rewritePlan(from: first).get()
+        #expect(plan.commits.map(\.subject) == ["feat: one", "feat: two", "feat: three", "feat: four"])
+        #expect(plan.pushedCount == 0)
+
+        var steps = plan.commits.map { RebaseStep(commit: $0) }
+        #expect(Repository.validate(steps, original: plan.commits) == "Nothing changed.")
+        steps[0].action = .squash
+        #expect(Repository.validate(steps, original: plan.commits)?.contains("can’t be squashed") == true)
+        steps[0].action = .reword
+        steps[0].message = "feat: first (reworded)\n\nWith a body."
+        steps[1].action = .fixup
+        steps[2].action = .drop
+        steps.swapAt(2, 3)   // four before (dropped) three
+        let todo = Repository.rebaseTodo(steps, messageFiles: [steps[0].commit.hash: "/tmp/it's msg"])
+        #expect(todo.contains("exec git commit --amend --only --allow-empty --cleanup=strip -F '/tmp/it'\\''s msg'"))
+        #expect(todo.contains("fixup \(plan.commits[1].hash)"))
+
+        let r = await repo.rewrite(plan, steps: steps)
+        #expect(r.ok, "\(r.errorMessage)")
+        #expect(repo.opState == .none)
+        let log = try Fixture.git(["log", "--format=%s", "-3"], in: dir).split(separator: "\n").map(String.init)
+        #expect(log == ["feat: four", "feat: first (reworded)", "Merge feature"], "\(log)")
+        #expect(try Fixture.git(["log", "-1", "--format=%b", "HEAD~1"], in: dir).trimmingCharacters(in: .whitespacesAndNewlines) == "With a body.")
+        #expect(!FileManager.default.fileExists(atPath: dir.appendingPathComponent("three.txt").path))
+        #expect(FileManager.default.fileExists(atPath: dir.appendingPathComponent("two.txt").path))
+        // Local changes survived (autostash) and the rewrite can be undone.
+        #expect(repo.status.staged.map(\.path) == ["src/b.swift"] || repo.status.unstaged.contains { $0.path == "src/b.swift" })
+        #expect(try #require(repo.undoCandidate).title == "Edit 4 Commits")
+
+        // Ranges with merges are refused.
+        let root = try Fixture.git(["rev-list", "--max-parents=0", "HEAD"], in: dir).trimmingCharacters(in: .whitespacesAndNewlines)
+        if case .failure(let e) = await repo.rewritePlan(from: root) {
+            #expect(e.message.contains("merge commits"))
+        } else {
+            Issue.record("expected a failure for a range with merges")
+        }
+    }
 }
 

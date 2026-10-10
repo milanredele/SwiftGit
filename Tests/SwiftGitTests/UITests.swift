@@ -365,5 +365,56 @@ struct UITests {
         #expect(wc.state.historySearch == nil)
         window.close()
     }
+
+    @Test func conflictedFileShowsResolutionButtons() async throws {
+        UI.setUpApp()
+        let dir = try Fixture.makeRepo()
+        try Fixture.git(["stash", "-q", "--include-untracked"], in: dir)
+        try Fixture.git(["switch", "-q", "-c", "topic/c"], in: dir)
+        try Fixture.write(dir, "c.md", "topic\n")
+        try Fixture.git(["commit", "-q", "-am", "topic change"], in: dir)
+        try Fixture.git(["switch", "-q", "main"], in: dir)
+        try Fixture.write(dir, "c.md", "main\n")
+        try Fixture.git(["commit", "-q", "-am", "main change"], in: dir)
+        let repo = try await Repository.open(dir)
+        let wc = RepoWindowController(repository: repo)
+        let window = try #require(wc.window)
+        await repo.refreshAll()
+        await repo.merge("topic/c")
+        let c = try #require(repo.status.conflicts.first)
+        let diff = DiffViewController(repository: repo)
+        window.contentViewController = diff
+        window.setContentSize(NSSize(width: 900, height: 500))
+        diff.show(.working(c, staged: false))
+        await UI.wait("conflict buttons") { diff.testConflictButtons != nil }
+        #expect(diff.testConflictButtons == ["Keep main", "Take topic/c", "Open Merge Tool", "Edit File", "Mark Resolved"])
+        #expect(diff.testPlaceholder?.contains("Both sides changed the same lines.") == true)
+        await UI.settle(window)
+        UI.snapshot(window, "conflict")
+        window.close()
+    }
+
+    @Test func rewriteCommitsSheetRenders() async throws {
+        let (repo, wc, window) = try await openWindow()
+        _ = wc
+        let first = try Fixture.git(["rev-parse", "main~1"], in: repo.root).trimmingCharacters(in: .whitespacesAndNewlines)
+        try Fixture.git(["switch", "-q", "-c", "topic/s"], in: repo.root)
+        try Fixture.write(repo.root, "s.txt", "1\n")
+        try Fixture.git(["add", "s.txt"], in: repo.root)
+        try Fixture.git(["commit", "-q", "-m", "fix: s", "--", "s.txt"], in: repo.root)
+        await repo.refreshAll()
+        // From the merge commit: refused (merges in range).
+        if case .success = await repo.rewritePlan(from: first) { Issue.record("expected refusal") }
+        let tip = try Fixture.git(["rev-parse", "HEAD"], in: repo.root).trimmingCharacters(in: .whitespacesAndNewlines)
+        let plan = try await repo.rewritePlan(from: tip).get()
+        let sheet = RewriteCommitsSheet(repository: repo, plan: plan)
+        sheet.testSet(0, .reword, message: "fix: better message")
+        if let w = sheet.window {
+            await UI.settle(w)
+            UI.snapshot(w, "edit-commits")
+        }
+        #expect(sheet.steps.first?.action == .reword)
+        window.close()
+    }
 }
 

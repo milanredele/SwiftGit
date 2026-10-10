@@ -25,6 +25,7 @@ import AppKit
     func openInTerminal(_ sender: Any?)
     func undoGitOperation(_ sender: Any?)
     func findInHistory(_ sender: Any?)
+    func editRecentCommits(_ sender: Any?)
     func findNextInHistory(_ sender: Any?)
     func findPreviousInHistory(_ sender: Any?)
     func recoverDiscarded(_ sender: Any?)
@@ -119,6 +120,7 @@ enum MainMenu {
         branch.keyEquivalentModifierMask = [.command, .shift]
         repo.addItem(withTitle: "Merge into Current Branch…", action: #selector(RepoActions.mergeBranch(_:)), keyEquivalent: "")
         repo.addItem(withTitle: "Rebase Current Branch onto…", action: #selector(RepoActions.rebaseBranch(_:)), keyEquivalent: "")
+        repo.addItem(withTitle: "Edit Recent Commits…", action: #selector(RepoActions.editRecentCommits(_:)), keyEquivalent: "")
         repo.addItem(.separator())
         let stash = repo.addItem(withTitle: "Stash Changes", action: #selector(RepoActions.stashChanges(_:)), keyEquivalent: "s")
         stash.keyEquivalentModifierMask = [.command, .shift]

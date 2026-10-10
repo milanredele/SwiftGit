@@ -33,7 +33,7 @@ enum Settings {
         static let autostash = "pull.autostash"
         static let claudeEnabled = "claude.enabled"
         static let claudeModel = "claude.model"
-        static let topoOrder = Repository.topoOrderKey
+        static let topoOrder = "history.topoOrder"   // = Repository.topoOrderKey
     }
 
     /// Minimum time between two automatic fetches of the same repository.

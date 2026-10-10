@@ -466,6 +466,11 @@ final class HistoryViewController: NSViewController, NSTableViewDataSource, NSTa
         }
     }
 
+    @objc private func editCommitsHere(_ item: NSMenuItem) {
+        guard let hash = item.representedObject as? String else { return }
+        actions?.editCommits(from: hash)
+    }
+
     // MARK: Context menu
 
     func menuNeedsUpdate(_ menu: NSMenu) {
@@ -492,6 +497,7 @@ final class HistoryViewController: NSViewController, NSTableViewDataSource, NSTa
         add("Merge into \(current)", #selector(mergeHere(_:)), refs.first(where: { $0.kind != .tag && $0.name != "HEAD" })?.name ?? hash)
         add("Rebase \(current) onto This", #selector(rebaseHere(_:)))
         add("Cherry-pick", #selector(cherryPick(_:)))
+        add("Edit Commits from Here…", #selector(editCommitsHere(_:)))
         add("Revert", #selector(revert(_:)))
         menu.addItem(.separator())
         let reset = NSMenuItem(title: "Reset \(current) to Here", action: nil, keyEquivalent: "")

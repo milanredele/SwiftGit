@@ -290,6 +290,8 @@ final class RepoWindowController: NSWindowController, NSWindowDelegate, NSToolba
             return !busy && repository.undoCandidate != nil
         case #selector(findNextInHistory(_:)), #selector(findPreviousInHistory(_:)):
             return state.mode == .history && state.historySearch != nil
+        case #selector(editRecentCommits(_:)):
+            return !busy && repository.opState == .none && repository.currentBranch != nil
         case #selector(popStash(_:)):
             return !busy && !repository.stashes.isEmpty
         case #selector(createPullRequest(_:)):
@@ -482,6 +484,43 @@ final class RepoWindowController: NSWindowController, NSWindowDelegate, NSToolba
 
     @objc func findNextInHistory(_ sender: Any?) { root.main?.content.history?.moveToMatch(forward: true) }
     @objc func findPreviousInHistory(_ sender: Any?) { root.main?.content.history?.moveToMatch(forward: false) }
+
+    /// Opens the commit editor (simple interactive rebase) from `hash` to HEAD.
+    func editCommits(from hash: String) {
+        guard let window, window.attachedSheet == nil else { return }
+        Task {
+            switch await repository.rewritePlan(from: hash) {
+            case .failure(let e):
+                await Prompt.error(window, title: "Can’t edit these commits", message: e.message)
+            case .success(let plan):
+                let sheet = RewriteCommitsSheet(repository: repository, plan: plan)
+                sheets.append(sheet)
+                sheet.onFinish = { [weak self, weak sheet] in self?.sheets.removeAll { $0 === sheet } }
+                sheet.present(on: window)
+            }
+        }
+    }
+
+    /// Repository › Edit Recent Commits…: from where the branch split off the main branch.
+    @objc func editRecentCommits(_ sender: Any?) {
+        Task {
+            var first: String?
+            if let main = repository.mainBranch {
+                let base = await repository.git.run(["merge-base", "HEAD", main]).output.trimmingCharacters(in: .whitespacesAndNewlines)
+                if !base.isEmpty {
+                    let next = await repository.git.run(["rev-list", "--reverse", "--first-parent", "\(base)..HEAD"])
+                    first = next.output.split(separator: "\n").first.map(String.init)
+                }
+            }
+            if first == nil {
+                // Fallback: the last 10 commits.
+                let r = await repository.git.run(["rev-list", "--first-parent", "-n", "10", "HEAD"])
+                first = r.output.split(separator: "\n").last.map(String.init)
+            }
+            guard let first else { NSSound.beep(); return }
+            editCommits(from: first)
+        }
+    }
 
     /// Switches to History and lists the commits that changed `path`.
     func showFileHistory(_ path: String) {

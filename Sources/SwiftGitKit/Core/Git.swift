@@ -38,6 +38,8 @@ struct FileChange: Hashable {
     var origPath: String?
     /// M, A, D, R, C, T, U (conflict) or ? (untracked)
     var code: Character
+    /// For conflicts: git's two-letter state (UU, AA, DU, UD, AU, UA, DD).
+    var conflictXY: String? = nil
 
     var isUntracked: Bool { code == "?" }
     var isConflict: Bool { code == "U" }
@@ -100,7 +102,7 @@ struct WorkingStatus {
             case "u":
                 let parts = f.split(separator: " ", maxSplits: 10, omittingEmptySubsequences: false)
                 guard parts.count == 11 else { continue }
-                s.conflicts.append(FileChange(path: String(parts[10]), origPath: nil, code: "U"))
+                s.conflicts.append(FileChange(path: String(parts[10]), origPath: nil, code: "U", conflictXY: String(parts[1])))
             case "?":
                 s.unstaged.append(FileChange(path: String(f.dropFirst(2)), origPath: nil, code: "?"))
             default:

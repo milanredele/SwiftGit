@@ -603,9 +603,13 @@ final class Repository {
         activityToken = nil
         activityTitle = nil
         notify(.activity)
-        if !r.ok && reportErrors && !token.isCancelled { onError?(title, r.errorMessage) }
+        let stateBefore = opState, headBefore = status.headOID
         await refreshStatus()
         await refreshRefs()
+        // A merge/rebase/cherry-pick that (newly) stopped for conflicts is not an error:
+        // the banner and the conflicted files explain what to do next.
+        let stoppedForConflicts = opState != .none && (stateBefore == .none || status.headOID != headBefore)
+        if !r.ok && reportErrors && !token.isCancelled && !stoppedForConflicts { onError?(title, r.errorMessage) }
         return r
     }
 

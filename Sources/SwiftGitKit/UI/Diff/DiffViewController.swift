@@ -97,6 +97,13 @@ final class DiffViewController: NSViewController {
     private let externalButton = NSButton(title: "", target: nil, action: nil)
     private let placeholder = makeLabel("", font: .systemFont(ofSize: 13), color: .secondaryLabelColor)
     private let placeholderButton = NSButton(title: "Load Anyway", target: nil, action: nil)
+    // Conflict resolution buttons, shown instead of a diff for conflicted files.
+    private let conflictButtons = NSStackView()
+    private let keepOursButton = NSButton(title: "Keep", target: nil, action: nil)
+    private let takeTheirsButton = NSButton(title: "Take", target: nil, action: nil)
+    private let mergeToolButton = NSButton(title: "Open Merge Tool", target: nil, action: nil)
+    private let editFileButton = NSButton(title: "Edit File", target: nil, action: nil)
+    private let resolvedButton = NSButton(title: "Mark Resolved", target: nil, action: nil)
     private var syncing = false
 
     init(repository: Repository) {
@@ -171,18 +178,35 @@ final class DiffViewController: NSViewController {
 
         placeholder.alignment = .center
         placeholder.lineBreakMode = .byWordWrapping
-        placeholder.maximumNumberOfLines = 4
+        placeholder.maximumNumberOfLines = 6
         placeholderButton.target = self
         placeholderButton.action = #selector(loadAnyway(_:))
         placeholderButton.translatesAutoresizingMaskIntoConstraints = false
         placeholderButton.isHidden = true
+        for (b, sel) in [(keepOursButton, #selector(keepOurs(_:))), (takeTheirsButton, #selector(takeTheirs(_:))),
+                         (mergeToolButton, #selector(openMergeTool(_:))), (editFileButton, #selector(editFile(_:))),
+                         (resolvedButton, #selector(markResolved(_:)))] {
+            b.bezelStyle = .rounded
+            b.target = self
+            b.action = sel
+        }
+        editFileButton.toolTip = "Open the file with its conflict markers in your default editor"
+        conflictButtons.setViews([keepOursButton, takeTheirsButton, mergeToolButton, editFileButton, resolvedButton], in: .center)
+        conflictButtons.orientation = .horizontal
+        conflictButtons.spacing = 8
+        conflictButtons.translatesAutoresizingMaskIntoConstraints = false
+        conflictButtons.isHidden = true
 
         root.addSubview(bar)
         root.addSubview(barSeparator)
         root.addSubview(body)
         root.addSubview(placeholder)
         root.addSubview(placeholderButton)
+        root.addSubview(conflictButtons)
         NSLayoutConstraint.activate([
+            conflictButtons.centerXAnchor.constraint(equalTo: body.centerXAnchor),
+            conflictButtons.topAnchor.constraint(equalTo: placeholder.bottomAnchor, constant: 14),
+            conflictButtons.widthAnchor.constraint(lessThanOrEqualTo: body.widthAnchor, constant: -20),
             bar.topAnchor.constraint(equalTo: root.topAnchor),
             bar.leadingAnchor.constraint(equalTo: root.leadingAnchor),
             bar.trailingAnchor.constraint(equalTo: root.trailingAnchor),
@@ -262,7 +286,9 @@ final class DiffViewController: NSViewController {
                 result = nil
             case .working(let c, let staged):
                 if c.isConflict {
-                    self.showPlaceholder("“\(c.path)” has conflicts.\nResolve them in your editor or a merge tool, then stage the file.", button: "Open Merge Tool")
+                    let sides = await self.repository.conflictSides()
+                    guard !Task.isCancelled, src == self.source else { return }
+                    self.showConflict(c, sides)
                     return
                 }
                 result = await self.repository.workingDiff(c, staged: staged, context: context)
@@ -330,7 +356,48 @@ final class DiffViewController: NSViewController {
         updateHeader()
     }
 
+    private func showConflict(_ c: FileChange, _ sides: ConflictSides) {
+        showPlaceholder("“\(c.path)” has conflicts. " + Repository.describeConflict(c.conflictXY, sides)
+                        + (sides.explanation.isEmpty ? "" : "\n" + sides.explanation)
+                        + "\nEdit the file and mark it resolved, or use one side’s whole version.")
+        keepOursButton.title = "Keep \(sides.ours)"
+        takeTheirsButton.title = "Take \(sides.theirs)"
+        editFileButton.isHidden = c.conflictXY == "DD" || !FileManager.default.fileExists(atPath: repository.root.appendingPathComponent(c.path).path)
+        conflictButtons.isHidden = false
+    }
+
+    private var conflictFile: FileChange? {
+        if case .working(let c, _) = source, c.isConflict { return c }
+        return nil
+    }
+
+    @objc private func keepOurs(_ sender: Any?) {
+        guard let c = conflictFile else { return }
+        Task { await ConflictActions.keep(.ours, files: [c], repository: repository, window: view.window) }
+    }
+
+    @objc private func takeTheirs(_ sender: Any?) {
+        guard let c = conflictFile else { return }
+        Task { await ConflictActions.keep(.theirs, files: [c], repository: repository, window: view.window) }
+    }
+
+    @objc private func openMergeTool(_ sender: Any?) {
+        if let c = conflictFile { repository.openMergetool(c.path) }
+    }
+
+    @objc private func editFile(_ sender: Any?) {
+        if let c = conflictFile { NSWorkspace.shared.open(repository.root.appendingPathComponent(c.path)) }
+    }
+
+    @objc private func markResolved(_ sender: Any?) {
+        guard let c = conflictFile else { return }
+        Task { await ConflictActions.markResolved([c], repository: repository, window: view.window) }
+    }
+
+    var testConflictButtons: [String]? { conflictButtons.isHidden ? nil : conflictButtons.views.filter { !$0.isHidden }.compactMap { ($0 as? NSButton)?.title } }
+
     private func showPlaceholder(_ text: String, button: String? = nil) {
+        conflictButtons.isHidden = true
         placeholder.stringValue = text
         placeholder.isHidden = false
         placeholderButton.isHidden = button == nil
@@ -339,6 +406,7 @@ final class DiffViewController: NSViewController {
     }
 
     private func hidePlaceholder() {
+        conflictButtons.isHidden = true
         placeholder.isHidden = true
         placeholderButton.isHidden = true
         body.isHidden = false
@@ -366,9 +434,9 @@ final class DiffViewController: NSViewController {
         let hasSelection = selHead != nil && diff != nil
         switch source {
         case .working(let c, let staged):
-            primaryButton.isHidden = false
-            linesButton.isHidden = c.isUntracked
-            discardButton.isHidden = staged
+            primaryButton.isHidden = c.isConflict
+            linesButton.isHidden = c.isUntracked || c.isConflict
+            discardButton.isHidden = staged || c.isConflict
             primaryButton.title = staged ? "Unstage Hunk" : "Stage Hunk"
             linesButton.title = staged ? "Unstage Lines" : "Stage Lines"
             discardButton.title = "Discard Hunk"

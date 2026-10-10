@@ -3,6 +3,32 @@ import Foundation
 import Testing
 @testable import SwiftGitKit
 
+/// Test-run safety net: unbuffered output (so a log shows where a run stopped)
+/// and a watchdog that ends a hung run instead of blocking the dev loop.
+enum Watchdog {
+    static let limit: UInt32 = 150
+    static let start: Void = {
+        setvbuf(stdout, nil, _IONBF, 0)
+        Thread.detachNewThread {
+            sleep(limit)
+            let msg = "WATCHDOG: test run still going after \(limit) s, exiting (see the last 'started' lines above).\n"
+            fputs(msg, stdout)
+            fputs(msg, stderr)
+            // Record every thread's stack (macOS `sample`) to see what is stuck.
+            let out = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
+                .deletingLastPathComponent().appendingPathComponent(".dev/hang-sample.txt")
+            let p = Process()
+            p.executableURL = URL(fileURLWithPath: "/usr/bin/sample")
+            p.arguments = [String(getpid()), "2", "-file", out.path]
+            p.standardOutput = FileHandle.nullDevice
+            p.standardError = FileHandle.nullDevice
+            try? p.run()
+            p.waitUntilExit()
+            exit(42)
+        }
+    }()
+}
+
 /// Builds throwaway repositories with a known history and working-tree state.
 enum Fixture {
     @discardableResult
@@ -56,6 +82,7 @@ enum Fixture {
     /// main: 3 commits + merge of `feature` (2 commits). Working tree: modified a.txt
     /// (unstaged), modified b.swift (staged), untracked new.txt.
     static func makeRepo() throws -> URL {
+        _ = Watchdog.start
         let dir = FileManager.default.temporaryDirectory
             .appendingPathComponent("gitui-fixture-\(UUID().uuidString.prefix(8))", isDirectory: true)
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
@@ -109,6 +136,7 @@ enum UI {
     }
 
     static func setUpApp() {
+        _ = Watchdog.start
         _ = NSApplication.shared
         NSApp.setActivationPolicy(.prohibited)
     }

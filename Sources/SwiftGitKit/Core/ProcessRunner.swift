@@ -120,7 +120,9 @@ enum ProcessRunner {
                     onStdout: (@Sendable (Data) -> Void)? = nil,
                     onStderrLine: (@Sendable (String) -> Void)? = nil) async -> RunResult {
         await withCheckedContinuation { (cont: CheckedContinuation<RunResult, Never>) in
-            DispatchQueue.global(qos: .userInitiated).async {
+            // Dedicated threads, not the GCD pool: these block on pipes, and many
+            // concurrent git processes could otherwise use up the pool and deadlock.
+            Thread.detachNewThread {
                 let r = runBlocking(executable: executable, arguments: arguments, cwd: cwd, stdin: stdin,
                                     environment: extra,
                                     cancel: cancel, onStdout: onStdout, onStderrLine: onStderrLine)
@@ -159,7 +161,7 @@ enum ProcessRunner {
         cancel?.attach(p)
 
         if let inPipe, let stdin {
-            DispatchQueue.global().async {
+            Thread.detachNewThread {
                 let fh = inPipe.fileHandleForWriting
                 try? fh.write(contentsOf: stdin)
                 try? fh.close()
@@ -171,17 +173,7 @@ enum ProcessRunner {
         let group = DispatchGroup()
 
         group.enter()
-        DispatchQueue.global().async {
-            let fh = outPipe.fileHandleForReading
-            while true {
-                guard let chunk = try? fh.read(upToCount: 65536), !chunk.isEmpty else { break }
-                if let onStdout { onStdout(chunk) } else { out.data.append(chunk) }
-            }
-            group.leave()
-        }
-
-        group.enter()
-        DispatchQueue.global().async {
+        Thread.detachNewThread {
             let fh = errPipe.fileHandleForReading
             var pending = Data()
             while true {
@@ -199,6 +191,13 @@ enum ProcessRunner {
                 }
             }
             group.leave()
+        }
+
+        // stdout is read on this (already dedicated) thread.
+        let outHandle = outPipe.fileHandleForReading
+        while true {
+            guard let chunk = try? outHandle.read(upToCount: 65536), !chunk.isEmpty else { break }
+            if let onStdout { onStdout(chunk) } else { out.data.append(chunk) }
         }
 
         group.wait()

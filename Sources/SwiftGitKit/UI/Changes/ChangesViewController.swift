@@ -202,6 +202,11 @@ final class ChangesViewController: NSViewController, NSTableViewDataSource, NSTa
         case .status:
             reloadLists()
             updateCommitControls()
+            if repository.status.conflicts.isEmpty {
+                conflictSides = nil
+            } else {
+                Task { conflictSides = await repository.conflictSides() }
+            }
         case .refs, .graph, .summaries, .activity, .pullRequests:
             break
         }
@@ -365,9 +370,15 @@ final class ChangesViewController: NSViewController, NSTableViewDataSource, NSTa
         if table === stagedTable {
             add("Unstage", #selector(menuUnstage(_:)))
         } else {
-            add(files.contains(where: \.isConflict) ? "Mark Resolved (Stage)" : "Stage", #selector(menuStage(_:)))
-            if files.count == 1, files[0].isConflict {
-                add("Open in Merge Tool", #selector(menuMergetool(_:)))
+            if files.contains(where: \.isConflict) {
+                add("Mark Resolved", #selector(menuMarkResolved(_:)))
+                if let sides = conflictSides {
+                    add("Keep \(sides.ours)’s Version", #selector(menuKeepOurs(_:)))
+                    add("Take \(sides.theirs)’s Version", #selector(menuTakeTheirs(_:)))
+                }
+                if files.count == 1 { add("Open in Merge Tool", #selector(menuMergetool(_:))) }
+            } else {
+                add("Stage", #selector(menuStage(_:)))
             }
             menu.addItem(.separator())
             add("Discard Changes…", #selector(menuDiscard(_:)))
@@ -393,6 +404,24 @@ final class ChangesViewController: NSViewController, NSTableViewDataSource, NSTa
         guard let first = files(from: item).first else { return }
         actions?.showFileHistory(first.path)
     }
+
+    @objc private func menuMarkResolved(_ item: NSMenuItem) {
+        let f = files(from: item)
+        Task { await ConflictActions.markResolved(f.filter(\.isConflict), repository: repository, window: view.window) }
+    }
+
+    @objc private func menuKeepOurs(_ item: NSMenuItem) {
+        let f = files(from: item)
+        Task { await ConflictActions.keep(.ours, files: f, repository: repository, window: view.window) }
+    }
+
+    @objc private func menuTakeTheirs(_ item: NSMenuItem) {
+        let f = files(from: item)
+        Task { await ConflictActions.keep(.theirs, files: f, repository: repository, window: view.window) }
+    }
+
+    /// Names of the conflict sides for the menu (loaded when conflicts appear).
+    private var conflictSides: ConflictSides?
 
     @objc private func menuStage(_ item: NSMenuItem) {
         let f = files(from: item)

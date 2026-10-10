@@ -3,7 +3,15 @@ import AppKit
 /// Small async wrappers around NSAlert sheets.
 @MainActor
 enum Prompt {
+    /// Alerts shown while running headless tests (they are answered with Cancel).
+    nonisolated(unsafe) static var headlessLog: [String] = []
+
     private static func run(_ alert: NSAlert, _ window: NSWindow?) async -> NSApplication.ModalResponse {
+        // Headless tests run with the .prohibited activation policy: never block in a modal loop.
+        if NSApp.activationPolicy() == .prohibited {
+            headlessLog.append(alert.messageText + " — " + alert.informativeText)
+            return .cancel
+        }
         if let window, window.attachedSheet == nil, window.isVisible {
             return await withCheckedContinuation { cont in
                 alert.beginSheetModal(for: window) { cont.resume(returning: $0) }
