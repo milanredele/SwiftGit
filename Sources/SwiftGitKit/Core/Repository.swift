@@ -60,6 +60,9 @@ final class Repository {
     /// Main branch used for merge checks: (name, tip, local name).
     private var mergeBaseInfo: (name: String, target: String, local: String?)?
     private var graphReloadAgain = false
+    /// Undo history of operations done in this tab (see RepositoryUndo.swift).
+    var undoStack: [UndoEntry] = []
+    var pendingUndo: UndoEntry?
 
     /// Most recently updated first; merged / upstream-deleted branches last.
     var localBranches: [RefInfo] {
@@ -101,6 +104,7 @@ final class Repository {
     }
 
     func start() {
+        Task { await expireDiscarded() }
         var paths = [root.path]
         if !gitDir.path.hasPrefix(root.path + "/") { paths.append(gitDir.path) }
         watcher = RepoWatcher(paths: paths) { [weak self] events in
@@ -562,37 +566,63 @@ final class Repository {
     func localBranch(named name: String) -> RefInfo? { refs.first { $0.kind == .local && $0.name == name } }
 
     func checkout(branch: String) async {
-        await perform("Checkout \(branch)", ["switch", branch])
+        await recordingUndo(.checkout, "Checkout \(branch)") {
+            await perform("Checkout \(branch)", ["switch", branch])
+        }
     }
 
     func checkout(remote ref: RefInfo) async {
         guard let local = ref.remoteBranch else { return }
         if localBranch(named: local) != nil {
-            await perform("Checkout \(local)", ["switch", local])
+            await checkout(branch: local)
         } else {
-            await perform("Checkout \(ref.name)", ["switch", "--track", ref.name])
+            let before = await headState()
+            let r = await perform("Checkout \(ref.name)", ["switch", "--track", ref.name])
+            if r.ok, let sha = await headState().sha {
+                undoStack.append(UndoEntry(kind: .createBranch(local, sha), title: "Checkout \(ref.name)",
+                                           before: before, after: HeadState(branch: local, sha: sha)))
+            }
         }
     }
 
     func checkoutDetached(_ target: String) async {
-        await perform("Checkout \(target)", ["switch", "--detach", target])
-    }
-
-    func createBranch(_ name: String, from start: String?, checkout: Bool) async {
-        if checkout {
-            await perform("Create branch \(name)", ["switch", "-c", name] + (start.map { [$0] } ?? []))
-        } else {
-            await perform("Create branch \(name)", ["branch", name] + (start.map { [$0] } ?? []))
+        await recordingUndo(.checkout, "Checkout \(String(target.prefix(8)))") {
+            await perform("Checkout \(target)", ["switch", "--detach", target])
         }
     }
 
+    func createBranch(_ name: String, from start: String?, checkout: Bool) async {
+        let before = await headState()
+        let r: RunResult
+        if checkout {
+            r = await perform("Create branch \(name)", ["switch", "-c", name] + (start.map { [$0] } ?? []))
+        } else {
+            r = await perform("Create branch \(name)", ["branch", name] + (start.map { [$0] } ?? []))
+        }
+        guard r.ok else { return }
+        let target = await git.run(["rev-parse", "-q", "--verify", "refs/heads/\(name)"]).output
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        undoStack.append(UndoEntry(kind: .createBranch(name, target), title: "Create Branch \(name)",
+                                   before: before, after: await headState()))
+    }
+
     func renameBranch(_ old: String, to new: String) async {
-        await perform("Rename \(old)", ["branch", "-m", old, new])
+        let before = await headState()
+        if await perform("Rename \(old)", ["branch", "-m", old, new]).ok {
+            undoStack.append(UndoEntry(kind: .renameBranch(old, new), title: "Rename \(old) to \(new)",
+                                       before: before, after: await headState()))
+        }
     }
 
     @discardableResult
     func deleteBranch(_ name: String, force: Bool) async -> RunResult {
-        await perform("Delete \(name)", ["branch", force ? "-D" : "-d", name], reportErrors: force)
+        let sha = localBranch(named: name)?.target
+        let before = await headState()
+        let r = await perform("Delete \(name)", ["branch", force ? "-D" : "-d", name], reportErrors: force)
+        if r.ok, let sha {
+            undoStack.append(UndoEntry(kind: .deleteBranch(name, sha), title: "Delete Branch \(name)", before: before, after: before))
+        }
+        return r
     }
 
     func deleteRemoteBranch(_ ref: RefInfo) async {
@@ -605,23 +635,28 @@ final class Repository {
     }
 
     func merge(_ ref: String) async {
-        await perform("Merge \(ref)", ["merge", "--no-edit", ref])
+        await recordingUndo(.moveHead, "Merge \(ref)") { await perform("Merge \(ref)", ["merge", "--no-edit", ref]) }
     }
 
     func rebase(onto ref: String) async {
-        await perform("Rebase onto \(ref)", ["rebase", ref])
+        await recordingUndo(.moveHead, "Rebase onto \(ref)") { await perform("Rebase onto \(ref)", ["rebase", ref]) }
     }
 
     func cherryPick(_ hash: String) async {
-        await perform("Cherry-pick", ["cherry-pick", hash])
+        await recordingUndo(.moveHead, "Cherry-pick \(String(hash.prefix(8)))") { await perform("Cherry-pick", ["cherry-pick", hash]) }
     }
 
     func revert(_ hash: String) async {
-        await perform("Revert", ["revert", "--no-edit", hash])
+        await recordingUndo(.moveHead, "Revert \(String(hash.prefix(8)))") { await perform("Revert", ["revert", "--no-edit", hash]) }
     }
 
     func reset(to hash: String, mode: String) async {
-        await perform("Reset (\(mode))", ["reset", "--\(mode)", hash])
+        if mode == "hard", status.changeCount > 0 {
+            _ = await saveDiscarded(paths: nil, summary: "Reset (hard) to \(String(hash.prefix(8)))")
+        }
+        await recordingUndo(.moveHead, "Reset (\(mode)) to \(String(hash.prefix(8)))") {
+            await perform("Reset (\(mode))", ["reset", "--\(mode)", hash])
+        }
     }
 
     func continueOperation() async {
@@ -632,6 +667,7 @@ final class Repository {
         case .reverting: await perform("Continue revert", ["revert", "--continue"])
         case .none: break
         }
+        await finishPendingUndo(aborted: false)
     }
 
     func abortOperation() async {
@@ -642,10 +678,12 @@ final class Repository {
         case .reverting: await perform("Abort revert", ["revert", "--abort"])
         case .none: break
         }
+        if opState == .none { await finishPendingUndo(aborted: true) }
     }
 
     func skipRebaseStep() async {
         await perform("Skip commit", ["rebase", "--skip"])
+        await finishPendingUndo(aborted: false)
     }
 
     func fetch() async {
@@ -656,7 +694,7 @@ final class Repository {
         var args = ["pull", "--progress"]
         if rebase == true { args.append("--rebase") }
         if rebase == false { args.append("--no-rebase") }
-        await perform("Pull", args)
+        await recordingUndo(.moveHead, "Pull") { await perform("Pull", args) }
     }
 
     /// Pushes `branch` (default: current). Sets the upstream when there is none.
@@ -759,6 +797,8 @@ final class Repository {
 
     /// Restores tracked files; untracked files are moved to the Trash.
     func discard(_ files: [FileChange]) async {
+        let names = files.map(\.path)
+        await saveDiscarded(paths: names, summary: "Discard " + (names.count == 1 ? names[0] : "\(names.count) files"))
         let untracked = files.filter(\.isUntracked)
         let tracked = files.filter { !$0.isUntracked && !$0.isConflict }
         for f in untracked {
@@ -775,7 +815,19 @@ final class Repository {
     func commit(message: String, amend: Bool) async -> Bool {
         var args = ["commit", "-F", "-"]
         if amend { args.append("--amend") }
-        return await perform(amend ? "Amend commit" : "Commit", args, stdin: Data(message.utf8)).ok
+        let subject = message.split(separator: "\n").first.map { String($0.prefix(50)) } ?? ""
+        return await recordingUndo(.commit, (amend ? "Amend “" : "Commit “") + subject + "”") {
+            await perform(amend ? "Amend commit" : "Commit", args, stdin: Data(message.utf8))
+        }.ok
+    }
+
+    static let discardRecoveryNote = "A copy is kept for \(Repository.discardKeepDays) days: Repository › Recover Discarded Changes…"
+
+    /// Reverse-applies `patch` to the working copy after saving the file's content.
+    @discardableResult
+    func discardPatch(_ patch: Data, path: String, title: String) async -> Bool {
+        await saveDiscarded(paths: [path], summary: "\(title) in \(path)")
+        return await apply(patch: patch, cached: false, reverse: true, title: title)
     }
 
     @discardableResult

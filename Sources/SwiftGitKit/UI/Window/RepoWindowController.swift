@@ -12,6 +12,7 @@ private extension NSToolbarItem.Identifier {
     static let pullRequest = Self("pullRequest")
     static let mode = Self("mode")
     static let account = Self("githubAccount")
+    static let undo = Self("undo")
 }
 
 /// One repository tab: window, toolbar, actions and background unloading.
@@ -48,7 +49,7 @@ final class RepoWindowController: NSWindowController, NSWindowDelegate, NSToolba
         if !window.setFrameUsingName("SwiftGitRepositoryWindow") { window.center() }
         window.setFrameAutosaveName("SwiftGitRepositoryWindow")
 
-        let toolbar = NSToolbar(identifier: "SwiftGitToolbar2")
+        let toolbar = NSToolbar(identifier: "SwiftGitToolbar3")
         toolbar.delegate = self
         toolbar.displayMode = .iconAndLabel
         toolbar.allowsUserCustomization = true
@@ -199,6 +200,7 @@ final class RepoWindowController: NSWindowController, NSWindowDelegate, NSToolba
     }
 
     private let specs: [NSToolbarItem.Identifier: ItemSpec] = [
+        .undo: ItemSpec(label: "Undo", symbol: "arrow.uturn.backward", action: #selector(RepoActions.undoGitOperation(_:)), tip: "Undo the last git operation (⌥⌘Z)"),
         .fetch: ItemSpec(label: "Fetch", symbol: "arrow.triangle.2.circlepath", action: #selector(RepoActions.fetch(_:)), tip: "Fetch all remotes (⇧⌘F)"),
         .pull: ItemSpec(label: "Pull", symbol: "arrow.down.circle", action: #selector(RepoActions.pull(_:)), tip: "Pull (⇧⌘L)"),
         .push: ItemSpec(label: "Push", symbol: "arrow.up.circle", action: #selector(RepoActions.push(_:)), tip: "Push (⇧⌘P)"),
@@ -211,7 +213,7 @@ final class RepoWindowController: NSWindowController, NSWindowDelegate, NSToolba
     ]
 
     func toolbarDefaultItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
-        [.toggleSidebar, .fetch, .pull, .push, .space, .branch, .merge, .rebase, .space, .stash, .pop, .space, .pullRequest, .flexibleSpace, .account, .mode]
+        [.toggleSidebar, .undo, .space, .fetch, .pull, .push, .space, .branch, .merge, .rebase, .space, .stash, .pop, .space, .pullRequest, .flexibleSpace, .account, .mode]
     }
 
     func toolbarAllowedItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
@@ -248,7 +250,10 @@ final class RepoWindowController: NSWindowController, NSWindowDelegate, NSToolba
     }
 
     func validateToolbarItem(_ item: NSToolbarItem) -> Bool {
-        validate(item.action)
+        if item.action == #selector(undoGitOperation(_:)) {
+            item.toolTip = repository.undoCandidate.map { "Undo \($0.title) (⌥⌘Z)" } ?? "Nothing to undo"
+        }
+        return validate(item.action)
     }
 
     func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
@@ -261,6 +266,8 @@ final class RepoWindowController: NSWindowController, NSWindowDelegate, NSToolba
             menuItem.state = state.mode == .history ? .on : .off
         case #selector(showChanges(_:)):
             menuItem.state = state.mode == .changes ? .on : .off
+        case #selector(undoGitOperation(_:)):
+            menuItem.title = repository.undoCandidate.map { "Undo \($0.title)" } ?? "Undo Git Operation"
         case #selector(toggleTopoOrder(_:)):
             menuItem.state = UserDefaults.standard.bool(forKey: Repository.topoOrderKey) ? .on : .off
         default:
@@ -277,6 +284,8 @@ final class RepoWindowController: NSWindowController, NSWindowDelegate, NSToolba
              #selector(forcePush(_:)), #selector(newBranch(_:)), #selector(mergeBranch(_:)), #selector(rebaseBranch(_:)),
              #selector(stashChanges(_:)):
             return !busy
+        case #selector(undoGitOperation(_:)):
+            return !busy && repository.undoCandidate != nil
         case #selector(popStash(_:)):
             return !busy && !repository.stashes.isEmpty
         case #selector(createPullRequest(_:)):
@@ -395,6 +404,25 @@ final class RepoWindowController: NSWindowController, NSWindowDelegate, NSToolba
 
     @objc func stashChanges(_ sender: Any?) { Task { await repository.stash() } }
     @objc func popStash(_ sender: Any?) { Task { await repository.stashPop() } }
+
+    @objc func undoGitOperation(_ sender: Any?) {
+        guard let e = repository.undoCandidate else { NSSound.beep(); return }
+        Task {
+            guard await Prompt.confirm(window, title: "Undo \(e.title)?", message: e.explanation, ok: "Undo") else { return }
+            await repository.undo(e)
+        }
+    }
+
+    @objc func recoverDiscarded(_ sender: Any?) {
+        guard let window else { return }
+        let sheet = DiscardedChangesSheet(repository: repository)
+        sheets.append(sheet)
+        sheet.onFinish = { [weak self, weak sheet] in self?.sheets.removeAll { $0 === sheet } }
+        sheet.present(on: window)
+    }
+
+    /// Keeps sheet controllers alive while they are shown.
+    private var sheets: [NSWindowController] = []
 
     @objc func createPullRequest(_ sender: Any?) {
         guard let branch = repository.currentBranch else { return }

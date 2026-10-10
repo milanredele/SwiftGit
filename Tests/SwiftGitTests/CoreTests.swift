@@ -486,5 +486,96 @@ struct CoreTests {
                                      head: "topic", base: "main").contains("isn’t on GitHub yet"))
         #expect(GitHub.friendlyError("something else", head: "topic", base: "main") == "something else")
     }
+
+    @Test func undoLastOperations() async throws {
+        let dir = try Fixture.makeRepo()
+        let repo = try await Repository.open(dir)
+        await repo.refreshAll()
+        let start = try #require(repo.status.headOID)
+
+        // Commit → undo puts the changes back, staged.
+        #expect(await repo.commit(message: "feat: staged b", amend: false))
+        let undoCommit = try #require(repo.undoCandidate)
+        #expect(undoCommit.title == "Commit “feat: staged b”")
+        #expect(await repo.undo(undoCommit))
+        #expect(repo.status.headOID == start)
+        #expect(repo.status.staged.map(\.path) == ["src/b.swift"])
+        #expect(repo.undoCandidate == nil)
+
+        // Branch create (with checkout), rename, delete, checkout.
+        await repo.createBranch("topic/u", from: nil, checkout: true)
+        #expect(repo.currentBranch == "topic/u")
+        await repo.renameBranch("topic/u", to: "topic/v")
+        #expect(try #require(repo.undoCandidate).kind == .renameBranch("topic/u", "topic/v"))
+        #expect(await repo.undo(try #require(repo.undoCandidate)))
+        #expect(repo.localBranch(named: "topic/u") != nil)
+        #expect(await repo.undo(try #require(repo.undoCandidate)))   // create
+        #expect(repo.currentBranch == "main")
+        #expect(repo.localBranch(named: "topic/u") == nil)
+
+        await repo.checkout(branch: "feature")
+        #expect(await repo.undo(try #require(repo.undoCandidate)))
+        #expect(repo.currentBranch == "main")
+
+        await repo.deleteBranch("feature", force: true)
+        #expect(repo.localBranch(named: "feature") == nil)
+        #expect(await repo.undo(try #require(repo.undoCandidate)))
+        #expect(repo.localBranch(named: "feature") != nil)
+
+        // A merge, then HEAD moved outside the app: undo is no longer offered.
+        try Fixture.git(["switch", "-q", "-c", "side", "v1.0"], in: dir)
+        try Fixture.write(dir, "side.txt", "s\n")
+        try Fixture.git(["add", "side.txt"], in: dir)
+        try Fixture.git(["commit", "-q", "-m", "side work", "--", "side.txt"], in: dir)
+        try Fixture.git(["switch", "-q", "main"], in: dir)
+        await repo.refreshAll()
+        await repo.merge("side")
+        let merge = try #require(repo.undoCandidate)
+        #expect(merge.kind == .moveHead)
+        try Fixture.git(["commit", "-q", "--allow-empty", "--only", "-m", "outside"], in: dir)
+        await repo.refreshAll()
+        #expect(repo.undoCandidate == nil)
+        try Fixture.git(["reset", "-q", "--soft", "HEAD~1"], in: dir)
+        await repo.refreshAll()
+        #expect(repo.undoCandidate == merge)
+        #expect(await repo.undo(merge))
+        #expect(repo.status.headOID == start)
+    }
+
+    @Test func discardedChangesCanBeRestored() async throws {
+        let dir = try Fixture.makeRepo()
+        let repo = try await Repository.open(dir)
+        await repo.refreshAll()
+        let before = try String(contentsOf: dir.appendingPathComponent("a.txt"), encoding: .utf8)
+        let a = try #require(repo.status.unstaged.first { $0.path == "a.txt" })
+        let untracked = try #require(repo.status.unstaged.first { $0.path == "new.txt" })
+        await repo.discard([a, untracked])
+        #expect(try String(contentsOf: dir.appendingPathComponent("a.txt"), encoding: .utf8) != before)
+        #expect(!FileManager.default.fileExists(atPath: dir.appendingPathComponent("new.txt").path))
+
+        let saved = await repo.discardedChanges()
+        #expect(saved.count == 1)
+        #expect(saved.first?.summary == "Discard 2 files")
+        #expect(Set(await repo.discardedFiles(saved[0])) == ["a.txt", "new.txt"])
+        // Not part of history or the stash list.
+        #expect(try Fixture.git(["stash", "list"], in: dir).isEmpty)
+        #expect(!(try Fixture.git(["log", "--branches", "--format=%s"], in: dir)).contains("Discard"))
+
+        #expect(await repo.restoreDiscarded(saved[0]))
+        #expect(try String(contentsOf: dir.appendingPathComponent("a.txt"), encoding: .utf8) == before)
+        #expect(try String(contentsOf: dir.appendingPathComponent("new.txt"), encoding: .utf8) == "brand new\n")
+        #expect(await repo.discardedChanges().count == 1)   // the files had no changes left, so nothing new to save
+
+        // Hard reset keeps a copy as well.
+        await repo.reset(to: "HEAD", mode: "hard")
+        #expect(await repo.discardedChanges().first?.summary.hasPrefix("Reset (hard)") == true)
+
+        // Old entries expire; once all are gone the ref is removed.
+        await repo.expireDiscarded(now: Date().addingTimeInterval(13 * 86_400))
+        #expect(await repo.discardedChanges().count == 2)
+        await repo.expireDiscarded(now: Date().addingTimeInterval(15 * 86_400))
+        #expect(await repo.discardedChanges().isEmpty)
+        #expect((try? Fixture.git(["rev-parse", "-q", "--verify", Repository.discardRef], in: dir)) == nil)
+    }
 }
 

@@ -344,7 +344,8 @@ final class ChangesViewController: NSViewController, NSTableViewDataSource, NSTa
         Task {
             let names = files.prefix(5).map(\.path).joined(separator: "\n") + (files.count > 5 ? "\n…" : "")
             guard await Prompt.confirm(view.window, title: "Discard changes in \(files.count) file\(files.count == 1 ? "" : "s")?",
-                                       message: names + "\n\nUntracked files are moved to the Trash.", ok: "Discard", destructive: true) else { return }
+                                       message: names + "\n\nUntracked files are moved to the Trash. " + Repository.discardRecoveryNote,
+                                       ok: "Discard", destructive: true) else { return }
             await repository.discard(files)
         }
     }

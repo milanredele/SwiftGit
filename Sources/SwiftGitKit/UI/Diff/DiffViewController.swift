@@ -747,23 +747,23 @@ final class DiffViewController: NSViewController {
     }
 
     @objc private func discardHunkAction(_ sender: Any?) {
-        guard case .working(_, let staged) = source, !staged else { return }
+        guard case .working(let change, let staged) = source, !staged else { return }
         guard let d = diff, let patch = d.patch(hunks: selectedHunks) else { NSSound.beep(); return }
         Task {
             guard await Prompt.confirm(view.window, title: "Discard the selected hunk?",
-                                       message: "This change will be lost.", ok: "Discard", destructive: true) else { return }
-            await repository.apply(patch: patch, cached: false, reverse: true, title: "Discard hunk")
+                                       message: Repository.discardRecoveryNote, ok: "Discard", destructive: true) else { return }
+            await repository.discardPatch(patch, path: change.path, title: "Discard hunk")
             clearSelection()
         }
     }
 
     @objc private func discardLinesAction(_ sender: Any?) {
-        guard case .working(_, let staged) = source, !staged else { return }
+        guard case .working(let change, let staged) = source, !staged else { return }
         guard let d = diff, let patch = d.patch(lines: selectedLines, reverse: true) else { NSSound.beep(); return }
         Task {
             guard await Prompt.confirm(view.window, title: "Discard the selected lines?",
-                                       message: "These changes will be lost.", ok: "Discard", destructive: true) else { return }
-            await repository.apply(patch: patch, cached: false, reverse: true, title: "Discard lines")
+                                       message: Repository.discardRecoveryNote, ok: "Discard", destructive: true) else { return }
+            await repository.discardPatch(patch, path: change.path, title: "Discard lines")
             clearSelection()
         }
     }

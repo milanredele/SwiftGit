@@ -115,12 +115,14 @@ enum ProcessRunner {
                     arguments: [String],
                     cwd: URL?,
                     stdin: Data? = nil,
+                    environment extra: [String: String] = [:],
                     cancel: CancelToken? = nil,
                     onStdout: (@Sendable (Data) -> Void)? = nil,
                     onStderrLine: (@Sendable (String) -> Void)? = nil) async -> RunResult {
         await withCheckedContinuation { (cont: CheckedContinuation<RunResult, Never>) in
             DispatchQueue.global(qos: .userInitiated).async {
                 let r = runBlocking(executable: executable, arguments: arguments, cwd: cwd, stdin: stdin,
+                                    environment: extra,
                                     cancel: cancel, onStdout: onStdout, onStderrLine: onStderrLine)
                 cont.resume(returning: r)
             }
@@ -131,6 +133,7 @@ enum ProcessRunner {
                             arguments: [String],
                             cwd: URL?,
                             stdin: Data?,
+                            environment extra: [String: String] = [:],
                             cancel: CancelToken?,
                             onStdout: (@Sendable (Data) -> Void)?,
                             onStderrLine: (@Sendable (String) -> Void)?) -> RunResult {
@@ -138,7 +141,7 @@ enum ProcessRunner {
         p.executableURL = URL(fileURLWithPath: executable)
         p.arguments = arguments
         if let cwd { p.currentDirectoryURL = cwd }
-        p.environment = Tooling.environment
+        p.environment = Tooling.environment.merging(extra) { _, new in new }
 
         let outPipe = Pipe()
         let errPipe = Pipe()

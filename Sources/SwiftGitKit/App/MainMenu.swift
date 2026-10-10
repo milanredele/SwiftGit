@@ -23,6 +23,8 @@ import AppKit
     func toggleTopoOrder(_ sender: Any?)
     func revealInFinder(_ sender: Any?)
     func openInTerminal(_ sender: Any?)
+    func undoGitOperation(_ sender: Any?)
+    func recoverDiscarded(_ sender: Any?)
 }
 
 enum MainMenu {
@@ -62,6 +64,8 @@ enum MainMenu {
         edit.addItem(withTitle: "Undo", action: Selector(("undo:")), keyEquivalent: "z")
         let redo = edit.addItem(withTitle: "Redo", action: Selector(("redo:")), keyEquivalent: "z")
         redo.keyEquivalentModifierMask = [.command, .shift]
+        let undoGit = edit.addItem(withTitle: "Undo Git Operation", action: #selector(RepoActions.undoGitOperation(_:)), keyEquivalent: "z")
+        undoGit.keyEquivalentModifierMask = [.command, .option]
         edit.addItem(.separator())
         edit.addItem(withTitle: "Cut", action: #selector(NSText.cut(_:)), keyEquivalent: "x")
         edit.addItem(withTitle: "Copy", action: #selector(NSText.copy(_:)), keyEquivalent: "c")
@@ -109,6 +113,7 @@ enum MainMenu {
         let stash = repo.addItem(withTitle: "Stash Changes", action: #selector(RepoActions.stashChanges(_:)), keyEquivalent: "s")
         stash.keyEquivalentModifierMask = [.command, .shift]
         repo.addItem(withTitle: "Pop Stash", action: #selector(RepoActions.popStash(_:)), keyEquivalent: "")
+        repo.addItem(withTitle: "Recover Discarded Changes…", action: #selector(RepoActions.recoverDiscarded(_:)), keyEquivalent: "")
         repo.addItem(.separator())
         let pr = repo.addItem(withTitle: "Create Pull Request…", action: #selector(RepoActions.createPullRequest(_:)), keyEquivalent: "r")
         pr.keyEquivalentModifierMask = [.command, .shift]

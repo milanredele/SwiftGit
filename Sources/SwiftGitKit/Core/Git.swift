@@ -21,11 +21,13 @@ final class Git: @unchecked Sendable {
 
     func run(_ args: [String],
              stdin: Data? = nil,
+             environment: [String: String] = [:],
              cancel: CancelToken? = nil,
              onStdout: (@Sendable (Data) -> Void)? = nil,
              onStderrLine: (@Sendable (String) -> Void)? = nil) async -> RunResult {
         await ProcessRunner.run(executable: Git.executable, arguments: Git.baseArgs + args, cwd: root,
-                                stdin: stdin, cancel: cancel, onStdout: onStdout, onStderrLine: onStderrLine)
+                                stdin: stdin, environment: environment, cancel: cancel,
+                                onStdout: onStdout, onStderrLine: onStderrLine)
     }
 }
 
