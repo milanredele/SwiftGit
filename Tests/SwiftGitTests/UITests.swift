@@ -286,5 +286,35 @@ struct UITests {
         #expect(sheet.testTitle == "feat: draft work (rebased)")
         sheet.window?.close()
     }
+
+    @Test func settingsWindowAndRecoverSheetRender() async throws {
+        UI.setUpApp()
+        let saved = Settings.defaults
+        defer { Settings.defaults = saved }
+        Settings.defaults = try #require(UserDefaults(suiteName: "SwiftGitSettingsUI-\(UUID().uuidString)"))
+        let settings = SettingsWindowController.shared
+        settings.load()
+        settings.testSet(pull: .rebase, autostash: true, model: "sonnet")
+        #expect(Settings.pullMode == .rebase && Settings.autostash && Settings.claudeModel == "sonnet")
+        if let w = settings.window {
+            await UI.settle(w)
+            UI.snapshot(w, "settings")
+        }
+
+        let (repo, wc, window) = try await openWindow()
+        let a = try #require(repo.status.unstaged.first { $0.path == "a.txt" })
+        await repo.discard([a])
+        #expect(repo.undoCandidate == nil)
+        let sheet = DiscardedChangesSheet(repository: repo)
+        sheet.reload()
+        await UI.wait("entries") { sheet.testEntries.count == 1 }
+        if let w = sheet.window {
+            w.setContentSize(NSSize(width: 560, height: 420))
+            await UI.settle(w)
+            UI.snapshot(w, "recover-discarded")
+        }
+        _ = wc
+        window.close()
+    }
 }
 

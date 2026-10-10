@@ -373,6 +373,32 @@ enum CommitStyle {
     }
 }
 
+/// Why a pull failed, from git's output.
+enum PullProblem: Equatable {
+    /// Uncommitted changes are in the way (fixable by stashing them first).
+    case localChanges
+    /// Fast-forward only was requested but the branches diverged.
+    case notFastForward
+    case other
+
+    static func classify(_ output: String) -> PullProblem {
+        let s = output.lowercased()
+        if s.contains("would be overwritten by") || s.contains("you have unstaged changes")
+            || s.contains("your index contains uncommitted changes") || s.contains("commit your changes or stash them") {
+            return .localChanges
+        }
+        if s.contains("not possible to fast-forward") || s.contains("diverging branches can't be fast-forwarded") {
+            return .notFastForward
+        }
+        return .other
+    }
+
+    /// git kept the stashed changes because re-applying them conflicted.
+    static func autostashConflicted(_ output: String) -> Bool {
+        output.lowercased().contains("autostash resulted in conflicts")
+    }
+}
+
 /// Why a push was refused, from git's stderr.
 enum PushProblem: Equatable {
     /// The remote branch has commits the local one doesn't (rebased/amended

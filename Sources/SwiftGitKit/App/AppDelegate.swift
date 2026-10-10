@@ -24,6 +24,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
     public func applicationDidFinishLaunching(_ notification: Notification) {
         signal(SIGPIPE, SIG_IGN)
         Tooling.loadLoginShellPath()
+        Settings.registerDefaults()
         NSWindow.allowsAutomaticWindowTabbing = true
         NSApp.mainMenu = MainMenu.build()
 
@@ -69,6 +70,10 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     // MARK: Opening
+
+    @objc func showSettings(_ sender: Any?) {
+        SettingsWindowController.shared.show()
+    }
 
     @objc func openDocument(_ sender: Any?) {
         openRepositoryPanel()

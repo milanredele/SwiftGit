@@ -35,6 +35,8 @@ enum MainMenu {
         let appMenu = NSMenu()
         appMenu.addItem(withTitle: "About SwiftGit", action: #selector(NSApplication.orderFrontStandardAboutPanel(_:)), keyEquivalent: "")
         appMenu.addItem(.separator())
+        appMenu.addItem(withTitle: "Settings…", action: #selector(AppDelegate.showSettings(_:)), keyEquivalent: ",")
+        appMenu.addItem(.separator())
         let services = NSMenu()
         let servicesItem = appMenu.addItem(withTitle: "Services", action: nil, keyEquivalent: "")
         servicesItem.submenu = services

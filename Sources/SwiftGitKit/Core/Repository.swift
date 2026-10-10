@@ -63,6 +63,10 @@ final class Repository {
     /// Undo history of operations done in this tab (see RepositoryUndo.swift).
     var undoStack: [UndoEntry] = []
     var pendingUndo: UndoEntry?
+    /// Quiet fetch started when the tab gets focus (user operations wait for it).
+    private var backgroundFetchTask: Task<Void, Never>?
+    private var lastBackgroundFetch = Date.distantPast
+    private(set) var lastBackgroundFetchError: String?
 
     /// Most recently updated first; merged / upstream-deleted branches last.
     var localBranches: [RefInfo] {
@@ -514,7 +518,10 @@ final class Repository {
     // MARK: Operations
 
     @discardableResult
-    func perform(_ title: String, _ args: [String], stdin: Data? = nil, reportErrors: Bool = true) async -> RunResult {
+    func perform(_ title: String, _ args: [String], stdin: Data? = nil, environment: [String: String] = [:],
+                 reportErrors: Bool = true) async -> RunResult {
+        // Don't race a quiet background fetch for git's locks.
+        if let fetch = backgroundFetchTask { await fetch.value }
         if let busy = activityTitle {
             onError?(title, "Please wait until “\(busy)” has finished.")
             return RunResult(status: -2, stdout: Data(), stderr: "busy")
@@ -524,7 +531,7 @@ final class Repository {
         activityTitle = title
         activityDetail = ""
         notify(.activity)
-        let r = await git.run(args, stdin: stdin, cancel: token, onStderrLine: { [weak self] line in
+        let r = await git.run(args, stdin: stdin, environment: environment, cancel: token, onStderrLine: { [weak self] line in
             Task { @MainActor in self?.setActivityDetail(line) }
         })
         activityToken = nil
@@ -690,11 +697,32 @@ final class Repository {
         await perform("Fetch", ["fetch", "--all", "--prune", "--progress"])
     }
 
+    /// Fetches all remotes quietly (no activity bar, no error dialogs), at most
+    /// once per `minInterval`. Used when the tab gets focus.
+    func fetchInBackground(minInterval: TimeInterval = Settings.focusFetchInterval) {
+        guard !remotes.isEmpty, backgroundFetchTask == nil, !isBusy, opState == .none,
+              Date().timeIntervalSince(lastBackgroundFetch) >= minInterval else { return }
+        lastBackgroundFetch = Date()
+        backgroundFetchTask = Task {
+            let r = await git.run(["fetch", "--all", "--prune", "--quiet"])
+            lastBackgroundFetchError = r.ok ? nil : r.errorMessage
+            backgroundFetchTask = nil
+            await refreshRefs()
+        }
+    }
+
+    var isFetchingInBackground: Bool { backgroundFetchTask != nil }
+
     func pull(rebase: Bool? = nil) async {
-        var args = ["pull", "--progress"]
-        if rebase == true { args.append("--rebase") }
-        if rebase == false { args.append("--no-rebase") }
-        await recordingUndo(.moveHead, "Pull") { await perform("Pull", args) }
+        let mode: PullMode = rebase == true ? .rebase : rebase == false ? .merge : Settings.pullMode
+        _ = await pullResult(mode: mode, autostash: Settings.autostash, reportErrors: true)
+    }
+
+    /// Pulls with `mode`; `autostash` stashes local changes first and re-applies them.
+    func pullResult(mode: PullMode, autostash: Bool, reportErrors: Bool) async -> RunResult {
+        var args = ["pull", "--progress"] + mode.arguments
+        if autostash { args.append("--autostash") }
+        return await recordingUndo(.moveHead, "Pull") { await perform("Pull", args, reportErrors: reportErrors) }
     }
 
     /// Pushes `branch` (default: current). Sets the upstream when there is none.

@@ -577,5 +577,68 @@ struct CoreTests {
         #expect(await repo.discardedChanges().isEmpty)
         #expect((try? Fixture.git(["rev-parse", "-q", "--verify", Repository.discardRef], in: dir)) == nil)
     }
+
+    @Test func pullWithLocalChangesAndBackgroundFetch() async throws {
+        let dir = try Fixture.makeRepo()
+        let parent = dir.deletingLastPathComponent()
+        let bare = parent.appendingPathComponent(dir.lastPathComponent + "-pull.git")
+        let other = parent.appendingPathComponent(dir.lastPathComponent + "-other")
+        try Fixture.git(["clone", "-q", "--bare", dir.path, bare.path], in: parent)
+        try Fixture.git(["remote", "add", "origin", bare.path], in: dir)
+        try Fixture.git(["fetch", "-q", "origin"], in: dir)
+        try Fixture.git(["branch", "-q", "--set-upstream-to=origin/main", "main"], in: dir)
+        try Fixture.git(["clone", "-q", bare.path, other.path], in: parent)
+        var lines = (1...40).map { "line \($0)" }
+        lines[4] = "line 5 changed"; lines[14] = "line 15 changed"; lines[39] = "line 40 from elsewhere"
+        try Fixture.write(other, "a.txt", lines.joined(separator: "\n") + "\n")
+        try Fixture.git(["commit", "-q", "-am", "fix: change line 40"], in: other)
+        try Fixture.git(["push", "-q", "origin", "main"], in: other)
+
+        let repo = try await Repository.open(dir)
+        await repo.refreshAll()
+
+        // Background fetch picks up the new commit without an activity or error.
+        repo.fetchInBackground(minInterval: 0)
+        #expect(repo.isFetchingInBackground)
+        await UI.wait("background fetch") { !repo.isFetchingInBackground }
+        #expect(repo.lastBackgroundFetchError == nil)
+        await repo.refreshAll()
+        #expect(repo.status.behind == 1)
+        // Throttled: a second focus right away does nothing.
+        repo.fetchInBackground()
+        #expect(!repo.isFetchingInBackground)
+
+        let blocked = await repo.pullResult(mode: .merge, autostash: false, reportErrors: false)
+        #expect(!blocked.ok)
+        #expect(PullProblem.classify(blocked.stderr + blocked.output) == .localChanges, "\(blocked.stderr)")
+        #expect(RepoWindowController.overwrittenFiles(blocked.stderr).contains("a.txt"), "\(blocked.stderr)")
+
+        let pulled = await repo.pullResult(mode: .merge, autostash: true, reportErrors: false)
+        #expect(pulled.ok, "\(pulled.errorMessage)")
+        let text = try String(contentsOf: dir.appendingPathComponent("a.txt"), encoding: .utf8)
+        #expect(text.contains("line 40 from elsewhere") && text.contains("line 3 modified in working tree"))
+        #expect(repo.status.behind == 0)
+        #expect(!PullProblem.autostashConflicted(pulled.stderr + pulled.output))
+        #expect(try #require(repo.undoCandidate).title == "Pull")
+
+        #expect(PullProblem.classify("fatal: Not possible to fast-forward, aborting.") == .notFastForward)
+        #expect(PullMode.rebase.arguments == ["--rebase"])
+        #expect(PullMode.gitConfig.arguments.isEmpty)
+    }
+
+    @Test func settingsDefaults() throws {
+        let saved = Settings.defaults
+        defer { Settings.defaults = saved }
+        let suite = try #require(UserDefaults(suiteName: "SwiftGitSettings-\(UUID().uuidString)"))
+        Settings.defaults = suite
+        #expect(Settings.fetchOnFocus)
+        #expect(Settings.pullMode == .gitConfig)
+        #expect(!Settings.autostash)
+        #expect(Settings.claudeModel == "haiku")
+        Settings.claudeModel = "  "
+        #expect(Settings.claudeModel == "haiku")
+        Settings.pullMode = .fastForwardOnly
+        #expect(suite.string(forKey: Settings.Key.pullMode) == "fastForwardOnly")
+    }
 }
 

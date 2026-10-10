@@ -87,6 +87,7 @@ final class RepoWindowController: NSWindowController, NSWindowDelegate, NSToolba
 
     func windowDidBecomeKey(_ notification: Notification) {
         GitHubAccounts.shared.refresh()
+        if Settings.fetchOnFocus { repository.fetchInBackground() }
     }
 
     func windowWillClose(_ notification: Notification) {
@@ -310,8 +311,66 @@ final class RepoWindowController: NSWindowController, NSWindowDelegate, NSToolba
     // MARK: RepoActions (menu + toolbar)
 
     @objc func fetch(_ sender: Any?) { Task { await repository.fetch() } }
-    @objc func pull(_ sender: Any?) { Task { await repository.pull() } }
-    @objc func pullRebase(_ sender: Any?) { Task { await repository.pull(rebase: true) } }
+    @objc func pull(_ sender: Any?) { pullHandlingLocalChanges(mode: Settings.pullMode) }
+    @objc func pullRebase(_ sender: Any?) { pullHandlingLocalChanges(mode: .rebase) }
+
+    /// Pulls; if uncommitted changes are in the way, offers to stash them,
+    /// pull and re-apply them (git's --autostash).
+    func pullHandlingLocalChanges(mode: PullMode) {
+        Task {
+            let autostash = Settings.autostash
+            let r = await repository.pullResult(mode: mode, autostash: autostash, reportErrors: false)
+            if r.ok {
+                await explainAutostash(r)
+                return
+            }
+            guard r.status != -2 else { return }
+            let output = r.stderr + "\n" + r.output
+            switch PullProblem.classify(output) {
+            case .localChanges where !autostash:
+                let files = Self.overwrittenFiles(output)
+                var which = "Your uncommitted changes"
+                if !files.isEmpty {
+                    which += " to " + files.prefix(6).joined(separator: ", ")
+                    if files.count > 6 { which += " and \(files.count - 6) more" }
+                }
+                let message = which + " are in the way of the pull.\n\nSwiftGit can stash them, pull, and put them back afterwards. "
+                    + "If putting them back conflicts, they stay safe in the stash list."
+                guard let always = await Prompt.confirm(window, title: "Stash changes and pull?", message: message,
+                                                        ok: "Stash and Pull", destructive: false,
+                                                        option: "Always do this (Settings › Pull)") else { return }
+                if always { Settings.autostash = true }
+                let again = await repository.pullResult(mode: mode, autostash: true, reportErrors: true)
+                if again.ok { await explainAutostash(again) }
+            case .notFastForward:
+                showError("Pull", "Your branch and its upstream have diverged, so it can’t be fast-forwarded. "
+                          + "Use Pull (Rebase), or change the pull mode in Settings.\n\n" + r.errorMessage)
+            default:
+                showError("Pull", r.errorMessage)
+            }
+        }
+    }
+
+    private func explainAutostash(_ r: RunResult) async {
+        guard PullProblem.autostashConflicted(r.stderr + r.output) else { return }
+        await Prompt.error(window, title: "Your stashed changes conflict with the pulled commits",
+                           message: "The pull worked, but putting your local changes back caused conflicts. Resolve them in Changes; "
+                            + "your changes are also still in the stash list (Pop or Drop it afterwards).")
+    }
+
+    /// File names from git's "would be overwritten by merge:" list.
+    static func overwrittenFiles(_ output: String) -> [String] {
+        var files: [String] = []
+        var inList = false
+        for line in output.split(separator: "\n", omittingEmptySubsequences: false) {
+            if line.contains("would be overwritten by") { inList = true; continue }
+            guard inList else { continue }
+            if line.hasPrefix("\t") || line.hasPrefix("        ") {
+                files.append(line.trimmingCharacters(in: .whitespaces))
+            } else { inList = false }
+        }
+        return files
+    }
     @objc func push(_ sender: Any?) { pushExplainingRejection(branch: nil) }
 
     /// Pushes; when git refuses because the remote branch has other commits
@@ -439,8 +498,7 @@ final class RepoWindowController: NSWindowController, NSWindowDelegate, NSToolba
     static let historyOrderChanged = Notification.Name("SwiftGitHistoryOrderChanged")
 
     @objc func toggleTopoOrder(_ sender: Any?) {
-        let d = UserDefaults.standard
-        d.set(!d.bool(forKey: Repository.topoOrderKey), forKey: Repository.topoOrderKey)
+        Settings.topoOrder.toggle()
         NotificationCenter.default.post(name: RepoWindowController.historyOrderChanged, object: nil)
     }
 

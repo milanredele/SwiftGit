@@ -138,6 +138,13 @@ enum UI {
     /// writes a view-tree dump to <name>.txt.
     static func snapshot(_ window: NSWindow, _ name: String) {
         guard let view = window.contentView else { return }
+        // cacheDisplay doesn't draw the window background: use the light appearance
+        // so text stays readable in snapshots when the Mac is in dark mode.
+        if window.appearance == nil {
+            window.appearance = NSAppearance(named: .aqua)
+            view.layoutSubtreeIfNeeded()
+            view.needsDisplay = true
+        }
         try? FileManager.default.createDirectory(at: snapshotDir, withIntermediateDirectories: true)
         if let rep = view.bitmapImageRepForCachingDisplay(in: view.bounds) {
             view.cacheDisplay(in: view.bounds, to: rep)

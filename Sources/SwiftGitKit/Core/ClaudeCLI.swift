@@ -4,8 +4,8 @@ import Foundation
 /// and logged in. Used to write pull request titles and descriptions from a
 /// branch's commit messages with a small, inexpensive model.
 enum ClaudeCLI {
-    /// Model alias passed to `claude --model` (the smallest, cheapest one).
-    static let model = "haiku"
+    /// Model alias passed to `claude --model` (default: haiku, the cheapest; see Settings).
+    static var model: String { Settings.claudeModel }
     static let timeout: TimeInterval = 120
 
     static var executable: String? {
@@ -18,7 +18,7 @@ enum ClaudeCLI {
         return candidates.first { FileManager.default.isExecutableFile(atPath: $0) }
     }
 
-    static var isAvailable: Bool { executable != nil }
+    static var isAvailable: Bool { Settings.claudeEnabled && executable != nil }
 
     struct Draft: Equatable {
         var title: String
