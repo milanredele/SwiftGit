@@ -28,9 +28,15 @@ A lightweight, native macOS git client built with plain AppKit on top of the
   expandable context, an overview strip of all changes, unified mode, and
   staging / unstaging / discarding of individual hunks or selected lines.
 - Syntax highlighting in diffs via [tree-sitter](https://tree-sitter.github.io/):
-  Swift, JavaScript, TypeScript/TSX, Python, Go, Rust, C, C++, Java, JSON, Bash,
-  Ruby, CSS, HTML, C# and Ada. Both file versions are parsed in the background and
-  only the colors for the visible diff lines are kept.
+  Swift, JavaScript, TypeScript/TSX, Python, Go, Rust, C, C++, Java, JSON (up to
+  8 MB), Bash, Ruby, CSS, HTML/SVG, C# and Ada. Both file versions are parsed in
+  the background and only the colors for the visible diff lines are kept.
+- More languages through bundled TextMate grammars, run by a small built-in
+  interpreter on the [Oniguruma](https://github.com/kkos/oniguruma) regex
+  library: YAML, Markdown, Dockerfile, Makefile, SQL, PHP, Objective-C, Lua,
+  Perl, INI/properties, diff/patch, Groovy/Gradle, PowerShell, XML, R, Dart,
+  log files, batch, SCSS and Less.
+- Very long lines (minified JSON, generated code) draw only their visible part.
 - **GitHub pull requests** with base/head selection, PR templates, draft flag
   and a searchable reviewer picker (people and teams). The title and
   description default to the branch's earliest commit message. If the
@@ -114,8 +120,11 @@ The suite uses swift-testing and runs headless:
 
 ```
 Sources/SwiftGit/          executable (main.swift only)
+Sources/COniguruma/        vendored Oniguruma regex library (C)
 Sources/SwiftGitKit/
   Core/                    git/gh runners, parsers, commit graph, diff model
+  Core/TextMate/           TextMate grammar interpreter
+  Resources/Grammars/      bundled TextMate grammars (compressed) + licenses
   UI/                      AppKit windows, sidebar, history, changes, diff, PR sheet
   App/                     app delegate and menus
 Tests/SwiftGitTests/       core + offscreen UI tests
@@ -123,6 +132,12 @@ scripts/build-app.sh       builds and bundles SwiftGit.app
 scripts/dev-loop.sh        local helper that runs build/test/commit actions on request
 .github/workflows/         CI: test, build universal app, publish release on main
 ```
+
+## License
+
+BSD 2-Clause, see [LICENSE](LICENSE). Third-party components (Oniguruma,
+tree-sitter and its grammars, SwiftTreeSitter, TextMate grammars) are listed
+with their licenses in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
 
 ## Releases
 

@@ -29,6 +29,9 @@ for b in "$BIN_DIR"/*.bundle; do
     [ -e "$b" ] && cp -R "$b" "$APP/Contents/Resources/"
 done
 
+# License and third-party notices travel with the app.
+cp LICENSE THIRD_PARTY_NOTICES.md "$APP/Contents/Resources/"
+
 PLIST="$APP/Contents/Info.plist"
 if [ -n "${VERSION:-}" ]; then
     /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $VERSION" "$PLIST"

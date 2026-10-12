@@ -18,6 +18,8 @@ from disk), only download and disk size.
 - Settings: list installed / available grammars, remove, update with the app.
 - Offline: diffs stay plain until the grammar is available.
 - CI: build the grammar libraries (universal) and attach them to each release.
+- The same mechanism can deliver more TextMate grammars (Kotlin, TOML, Scala,
+  Terraform, …); they are small compressed JSON files, no compilation needed.
 
 ## Other ideas (suggested, not scheduled)
 
