@@ -802,24 +802,6 @@ struct CoreTests {
         var start = Date()
         let spans = try #require(SyntaxHighlighter.shared.highlight(minified, path: "data.json", lines: [1]))
         let minifiedTime = Date().timeIntervalSince(start)
-        print(String(format: "DIAG json parse only: %.2f s", parseTime))
-        do {
-            let lang = Language(language: SyntaxHighlighter.shared.definition("json")!.0!)
-            let qtext = SyntaxHighlighter.shared.queryText("TreeSitterJSON_TreeSitterJSON", "highlights")!
-            let q = try Query(language: lang, data: Data(qtext.utf8))
-            let tree = p.parse(minified)!
-            var t = Date()
-            let c1 = q.execute(in: tree)
-            c1.setRange(NSRange(location: 0, length: 100_000))
-            var n1 = 0
-            while c1.next() != nil { n1 += 1 }
-            let rangedTime = Date().timeIntervalSince(t)
-            t = Date()
-            let c2 = q.execute(in: tree)
-            c2.setRange(NSRange(location: 0, length: 100_000))
-            let h = c2.resolve(with: Predicate.Context(textProvider: { _, _ in nil })).highlights()
-            print(String(format: "DIAG json query: ranged iterate %d matches %.2f s; resolve+highlights %d in %.2f s", n1, rangedTime, h.count, Date().timeIntervalSince(t)))
-        }
         let line = try #require(spans[1])
         #expect(!line.isEmpty)
         #expect(line.allSatisfy { Int($0.start) < SyntaxHighlighter.maxSpanColumn })
