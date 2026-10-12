@@ -69,11 +69,11 @@ final class SyntaxHighlighter: @unchecked Sendable {
     }
 
     private let lock = NSLock()
+    /// Compiled queries are small (0.01–0.12 MB each, all languages ≈ 0.5 MB), so
+    /// they are kept. Compiling is what costs: tree-sitter analyses the query
+    /// against the grammar's parse table, which for Swift takes ~0.3 s and a few
+    /// MB of temporary memory. Compile each language once, off the main thread.
     private var specs: [String: Spec] = [:]
-    /// Most recently used last. Compiled queries can be several MB (Swift ≈ 6 MB),
-    /// so only the last few languages are kept; others are recompiled on demand.
-    private var recent: [String] = []
-    static let cachedLanguages = 2
     private var failed = Set<String>()
 
     // MARK: Language detection
@@ -120,7 +120,7 @@ final class SyntaxHighlighter: @unchecked Sendable {
         return dirs
     }()
 
-    private func queryText(_ bundle: String, _ name: String) -> String? {
+    func queryText(_ bundle: String, _ name: String) -> String? {
         for dir in bundleDirectories {
             let url = dir.appendingPathComponent("\(bundle).bundle/queries/\(name).scm")
             if let text = try? String(contentsOf: url, encoding: .utf8) { return text }
@@ -130,7 +130,7 @@ final class SyntaxHighlighter: @unchecked Sendable {
         return nil
     }
 
-    private func definition(_ id: String) -> (OpaquePointer?, [(String, String)])? {
+    func definition(_ id: String) -> (OpaquePointer?, [(String, String)])? {
         let js = "TreeSitterJavaScript_TreeSitterJavaScript"
         let ts = "TreeSitterTypeScript_TreeSitterTypeScript"
         switch id {
@@ -158,11 +158,7 @@ final class SyntaxHighlighter: @unchecked Sendable {
     private func spec(_ id: String) -> Spec? {
         lock.lock()
         defer { lock.unlock() }
-        if let s = specs[id] {
-            recent.removeAll { $0 == id }
-            recent.append(id)
-            return s
-        }
+        if let s = specs[id] { return s }
         if failed.contains(id) { return nil }
         guard let def = definition(id), let ptr = def.0 else { failed.insert(id); return nil }
         let parts = def.1
@@ -177,8 +173,6 @@ final class SyntaxHighlighter: @unchecked Sendable {
             let query = try Query(language: language, data: Data(text.utf8))
             let s = Spec(language: language, query: query)
             specs[id] = s
-            recent.append(id)
-            while recent.count > SyntaxHighlighter.cachedLanguages { specs[recent.removeFirst()] = nil }
             return s
         } catch {
             NSLog("SwiftGit: highlight query for \(id) failed: \(error)")

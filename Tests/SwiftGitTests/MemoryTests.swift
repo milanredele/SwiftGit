@@ -1,5 +1,6 @@
 import AppKit
 import Darwin
+import SwiftTreeSitter
 import Testing
 @testable import SwiftGitKit
 
@@ -176,3 +177,43 @@ struct MemoryTests {
     }
 }
 
+
+/// Where the memory for syntax highlighting goes (diagnostic, prints only).
+@MainActor
+@Suite("Highlight query cost", .serialized, .disabled(if: !MemoryTests.measuring))
+struct HighlightQueryCost {
+    static func inUse() -> Int {
+        var s = malloc_statistics_t()
+        malloc_zone_statistics(nil, &s)
+        return Int(s.size_in_use)
+    }
+
+    @Test func compileCostPerLanguage() throws {
+        let h = SyntaxHighlighter()
+        var lines: [String] = []
+        for id in ["swift", "typescript", "tsx", "javascript", "python", "go", "rust", "c", "cpp", "java",
+                   "json", "bash", "ruby", "css", "html", "csharp", "ada"] {
+            guard let def = h.definition(id), let ptr = def.0 else { continue }
+            let text = def.1.compactMap { h.queryText($0.0, $0.1) }.joined(separator: "\n")
+            let language = Language(language: ptr)
+            let fpBefore = MemoryTests.footprint()
+            let before = Self.inUse()
+            let start = Date()
+            var query: Query? = try Query(language: language, data: Data(text.utf8))
+            let ms = Date().timeIntervalSince(start) * 1000
+            let compiled = Self.inUse()
+            let fpCompiled = MemoryTests.footprint()
+            let patterns = query?.patternCount ?? 0
+            query = nil
+            let freed = Self.inUse()
+            lines.append(String(format: "%@: .scm %d B, %d patterns, compile %.0f ms, query keeps %.2f MB, footprint %+.1f MB, after release %+.2f MB",
+                                id, text.utf8.count, patterns, ms,
+                                Double(compiled - before) / 1_048_576,
+                                Double(fpCompiled - fpBefore) / 1_048_576,
+                                Double(freed - before) / 1_048_576))
+        }
+        let out = lines.joined(separator: "\n")
+        print("DIAG queries\n" + out)
+        try out.write(to: UI.snapshotDir.appendingPathComponent("query-cost.txt"), atomically: true, encoding: .utf8)
+    }
+}

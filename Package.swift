@@ -62,7 +62,7 @@ let package = Package(
         ),
         .testTarget(
             name: "SwiftGitTests",
-            dependencies: ["SwiftGitKit"],
+            dependencies: ["SwiftGitKit", .product(name: "SwiftTreeSitter", package: "swift-tree-sitter")],
             path: "Tests/SwiftGitTests"
         ),
     ]
