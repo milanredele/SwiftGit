@@ -474,6 +474,7 @@ struct UITests {
         await repo.refreshAll()
         let change = try #require(repo.status.unstaged.first { $0.path == "data.json" })
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1000, height: 400), styleMask: [.titled], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false   // the test owns it; close() must not release it again
         let diff = DiffViewController(repository: repo)
         window.contentViewController = diff
         diff.show(.working(change, staged: false))
@@ -495,6 +496,29 @@ struct UITests {
         print("DIAG long line draw times:", times.map { String(format: "%.1f ms", $0 * 1000) })
         #expect(times.max()! < 0.1, "\(times)")
         UI.snapshot(window, "long-line")
+        window.close()
+    }
+
+    @Test func textMateHighlightingInDiff() async throws {
+        UI.setUpApp()
+        let dir = try Fixture.makeRepo()
+        let yaml = "# CI config\nname: build\non:\n  push:\n    branches: [main]\njobs:\n  test:\n    runs-on: macos-26\n    steps:\n      - uses: actions/checkout@v4\n      - run: swift test  # all\n"
+        try Fixture.write(dir, "ci.yml", yaml)
+        try Fixture.git(["add", "ci.yml"], in: dir)
+        try Fixture.git(["commit", "-q", "-m", "ci", "--", "ci.yml"], in: dir)
+        try Fixture.write(dir, "ci.yml", yaml.replacingOccurrences(of: "swift test  # all", with: "swift test --parallel  # all\n      - name: \"Build app\"\n        run: scripts/build-app.sh release"))
+        let repo = try await Repository.open(dir)
+        await repo.refreshAll()
+        let change = try #require(repo.status.unstaged.first { $0.path == "ci.yml" })
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1100, height: 360), styleMask: [.titled], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false   // the test owns it; close() must not release it again
+        let diff = DiffViewController(repository: repo)
+        window.contentViewController = diff
+        diff.show(.working(change, staged: false))
+        await UI.wait("rows") { diff.testRowCount > 0 }
+        await UI.wait("syntax") { diff.testSyntaxLineCount > 0 }
+        await UI.settle(window)
+        UI.snapshot(window, "textmate-yaml")
         window.close()
     }
 }

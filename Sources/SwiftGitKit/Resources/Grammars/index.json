@@ -1,0 +1,425 @@
+[
+ {
+  "scopeName": "source.batchfile",
+  "file": "source.batchfile.json.z",
+  "language": "bat",
+  "extensions": [
+   "bat",
+   "cmd"
+  ],
+  "filenames": [],
+  "filenamePatterns": []
+ },
+ {
+  "scopeName": "source.css.less",
+  "file": "source.css.less.json.z",
+  "language": "less",
+  "extensions": [
+   "less"
+  ],
+  "filenames": [],
+  "filenamePatterns": []
+ },
+ {
+  "scopeName": "source.css.scss",
+  "file": "source.css.scss.json.z",
+  "language": "scss",
+  "extensions": [
+   "scss"
+  ],
+  "filenames": [],
+  "filenamePatterns": []
+ },
+ {
+  "scopeName": "source.dart",
+  "file": "source.dart.json.z",
+  "language": "dart",
+  "extensions": [
+   "dart"
+  ],
+  "filenames": [],
+  "filenamePatterns": []
+ },
+ {
+  "scopeName": "source.diff",
+  "file": "source.diff.json.z",
+  "language": "diff",
+  "extensions": [
+   "diff",
+   "patch",
+   "rej"
+  ],
+  "filenames": [],
+  "filenamePatterns": []
+ },
+ {
+  "scopeName": "source.dockerfile",
+  "file": "source.dockerfile.json.z",
+  "language": "dockerfile",
+  "extensions": [
+   "dockerfile",
+   "containerfile"
+  ],
+  "filenames": [
+   "Dockerfile",
+   "Containerfile"
+  ],
+  "filenamePatterns": [
+   "Dockerfile.*",
+   "Containerfile.*"
+  ]
+ },
+ {
+  "scopeName": "source.groovy",
+  "file": "source.groovy.json.z",
+  "language": "groovy",
+  "extensions": [
+   "groovy",
+   "gvy",
+   "gradle",
+   "jenkinsfile",
+   "nf"
+  ],
+  "filenames": [
+   "Jenkinsfile"
+  ],
+  "filenamePatterns": [
+   "Jenkinsfile*"
+  ]
+ },
+ {
+  "scopeName": "source.ini",
+  "file": "source.ini.json.z",
+  "language": "ini",
+  "extensions": [
+   "ini",
+   "conf",
+   "properties",
+   "cfg",
+   "directory",
+   "gitattributes",
+   "gitconfig",
+   "gitmodules",
+   "editorconfig",
+   "repo"
+  ],
+  "filenames": [
+   "gitconfig"
+  ],
+  "filenamePatterns": []
+ },
+ {
+  "scopeName": "source.lua",
+  "file": "source.lua.json.z",
+  "language": "lua",
+  "extensions": [
+   "lua"
+  ],
+  "filenames": [],
+  "filenamePatterns": []
+ },
+ {
+  "scopeName": "source.makefile",
+  "file": "source.makefile.json.z",
+  "language": "makefile",
+  "extensions": [
+   "mak",
+   "mk"
+  ],
+  "filenames": [
+   "Makefile",
+   "makefile",
+   "GNUmakefile",
+   "OCamlMakefile"
+  ],
+  "filenamePatterns": []
+ },
+ {
+  "scopeName": "source.objc",
+  "file": "source.objc.json.z",
+  "language": "objective-c",
+  "extensions": [
+   "m"
+  ],
+  "filenames": [],
+  "filenamePatterns": []
+ },
+ {
+  "scopeName": "source.perl",
+  "file": "source.perl.json.z",
+  "language": "perl",
+  "extensions": [
+   "pl",
+   "pm",
+   "pod",
+   "t",
+   "psgi"
+  ],
+  "filenames": [],
+  "filenamePatterns": []
+ },
+ {
+  "scopeName": "source.php",
+  "file": "source.php.json.z",
+  "language": null,
+  "extensions": [],
+  "filenames": [],
+  "filenamePatterns": []
+ },
+ {
+  "scopeName": "source.powershell",
+  "file": "source.powershell.json.z",
+  "language": "powershell",
+  "extensions": [
+   "ps1",
+   "psm1",
+   "psd1",
+   "pssc",
+   "psrc"
+  ],
+  "filenames": [],
+  "filenamePatterns": []
+ },
+ {
+  "scopeName": "source.r",
+  "file": "source.r.json.z",
+  "language": "r",
+  "extensions": [
+   "r",
+   "rhistory",
+   "rprofile",
+   "rt"
+  ],
+  "filenames": [],
+  "filenamePatterns": []
+ },
+ {
+  "scopeName": "source.sassdoc",
+  "file": "source.sassdoc.json.z",
+  "language": null,
+  "extensions": [],
+  "filenames": [],
+  "filenamePatterns": []
+ },
+ {
+  "scopeName": "source.sql",
+  "file": "source.sql.json.z",
+  "language": "sql",
+  "extensions": [
+   "sql",
+   "dsql"
+  ],
+  "filenames": [],
+  "filenamePatterns": []
+ },
+ {
+  "scopeName": "source.yaml",
+  "file": "source.yaml.json.z",
+  "language": "dockercompose",
+  "extensions": [
+   "yaml",
+   "yml",
+   "eyaml",
+   "eyml",
+   "cff",
+   "yaml-tmlanguage",
+   "yaml-tmpreferences",
+   "yaml-tmtheme",
+   "winget"
+  ],
+  "filenames": [],
+  "filenamePatterns": [
+   "compose.yml",
+   "compose.yaml",
+   "compose.*.yml",
+   "compose.*.yaml",
+   "*docker*compose*.yml",
+   "*docker*compose*.yaml"
+  ]
+ },
+ {
+  "scopeName": "source.yaml.1.0",
+  "file": "source.yaml.1.0.json.z",
+  "language": null,
+  "extensions": [],
+  "filenames": [],
+  "filenamePatterns": []
+ },
+ {
+  "scopeName": "source.yaml.1.1",
+  "file": "source.yaml.1.1.json.z",
+  "language": null,
+  "extensions": [],
+  "filenames": [],
+  "filenamePatterns": []
+ },
+ {
+  "scopeName": "source.yaml.1.2",
+  "file": "source.yaml.1.2.json.z",
+  "language": null,
+  "extensions": [],
+  "filenames": [],
+  "filenamePatterns": []
+ },
+ {
+  "scopeName": "source.yaml.1.3",
+  "file": "source.yaml.1.3.json.z",
+  "language": null,
+  "extensions": [],
+  "filenames": [],
+  "filenamePatterns": []
+ },
+ {
+  "scopeName": "source.yaml.embedded",
+  "file": "source.yaml.embedded.json.z",
+  "language": null,
+  "extensions": [],
+  "filenames": [],
+  "filenamePatterns": []
+ },
+ {
+  "scopeName": "text.html.basic",
+  "file": "text.html.basic.json.z",
+  "language": null,
+  "extensions": [],
+  "filenames": [],
+  "filenamePatterns": []
+ },
+ {
+  "scopeName": "text.html.derivative",
+  "file": "text.html.derivative.json.z",
+  "language": null,
+  "extensions": [],
+  "filenames": [],
+  "filenamePatterns": []
+ },
+ {
+  "scopeName": "text.html.markdown",
+  "file": "text.html.markdown.json.z",
+  "language": "markdown",
+  "extensions": [
+   "md",
+   "mkd",
+   "mkdn",
+   "mdwn",
+   "mdown",
+   "markdown",
+   "markdn",
+   "mdtxt",
+   "mdtext",
+   "litcoffee",
+   "ron",
+   "ronn",
+   "workbook"
+  ],
+  "filenames": [],
+  "filenamePatterns": []
+ },
+ {
+  "scopeName": "text.html.php",
+  "file": "text.html.php.json.z",
+  "language": "php",
+  "extensions": [
+   "php",
+   "php4",
+   "php5",
+   "phtml",
+   "ctp"
+  ],
+  "filenames": [],
+  "filenamePatterns": []
+ },
+ {
+  "scopeName": "text.log",
+  "file": "text.log.json.z",
+  "language": "log",
+  "extensions": [
+   "log"
+  ],
+  "filenames": [],
+  "filenamePatterns": []
+ },
+ {
+  "scopeName": "text.xml",
+  "file": "text.xml.json.z",
+  "language": "xml",
+  "extensions": [
+   "xml",
+   "xsd",
+   "ascx",
+   "atom",
+   "axml",
+   "axaml",
+   "bpmn",
+   "cpt",
+   "csl",
+   "csproj",
+   "csproj.user",
+   "dita",
+   "ditamap",
+   "dtd",
+   "ent",
+   "mod",
+   "dtml",
+   "fsproj",
+   "fxml",
+   "iml",
+   "isml",
+   "jmx",
+   "launch",
+   "menu",
+   "mxml",
+   "nuspec",
+   "opml",
+   "owl",
+   "proj",
+   "props",
+   "pt",
+   "publishsettings",
+   "pubxml",
+   "pubxml.user",
+   "rbxlx",
+   "rbxmx",
+   "rdf",
+   "rng",
+   "rss",
+   "shproj",
+   "slnx",
+   "storyboard",
+   "svg",
+   "targets",
+   "tld",
+   "tmx",
+   "vbproj",
+   "vbproj.user",
+   "vcxproj",
+   "vcxproj.filters",
+   "wixproj",
+   "wsdl",
+   "wxi",
+   "wxl",
+   "wxs",
+   "xaml",
+   "xbl",
+   "xib",
+   "xlf",
+   "xliff",
+   "xpdl",
+   "xul",
+   "xoml"
+  ],
+  "filenames": [],
+  "filenamePatterns": []
+ },
+ {
+  "scopeName": "text.xml.xsl",
+  "file": "text.xml.xsl.json.z",
+  "language": "xsl",
+  "extensions": [
+   "xsl",
+   "xslt"
+  ],
+  "filenames": [],
+  "filenamePatterns": []
+ }
+]

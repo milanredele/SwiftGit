@@ -631,7 +631,7 @@ final class DiffViewController: NSViewController {
         syntaxOld = [:]
         syntaxNew = [:]
         guard let d = diff, let change = source.change,
-              SyntaxHighlighter.shared.languageID(forPath: change.path) != nil else { return }
+              SyntaxHighlighter.shared.canHighlight(path: change.path) else { return }
         var oldLines = Set<Int>(), newLines = Set<Int>()
         for l in d.lines {
             if l.kind != .added && l.oldNo > 0 { oldLines.insert(Int(l.oldNo)) }

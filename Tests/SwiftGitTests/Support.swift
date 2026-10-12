@@ -9,6 +9,14 @@ enum Watchdog {
     static let limit: UInt32 = 150
     static let start: Void = {
         setvbuf(stdout, nil, _IONBF, 0)
+        // On a Swift runtime trap, print the stack of the crashing thread (debug aid).
+        for sig in [SIGTRAP, SIGSEGV, SIGBUS] {
+            signal(sig) { s in
+                let trace = Thread.callStackSymbols.joined(separator: "\n")
+                fputs("CRASH (signal \(s)) stack:\n" + trace + "\n", stdout)
+                exit(43)
+            }
+        }
         Thread.detachNewThread {
             sleep(limit)
             let msg = "WATCHDOG: test run still going after \(limit) s, exiting (see the last 'started' lines above).\n"

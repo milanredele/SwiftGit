@@ -49,11 +49,19 @@ let package = Package(
     ],
     targets: [
         // All app code lives in the library so tests can drive it in-process.
+        // Oniguruma regex library (BSD 2-clause) for the TextMate grammar highlighter.
+        .target(
+            name: "COniguruma",
+            path: "Sources/COniguruma",
+            exclude: ["COPYING", "README.md"],
+            publicHeadersPath: "include"
+        ),
         .target(
             name: "SwiftGitKit",
-            dependencies: [.product(name: "SwiftTreeSitter", package: "swift-tree-sitter")]
+            dependencies: ["COniguruma", .product(name: "SwiftTreeSitter", package: "swift-tree-sitter")]
                 + grammars.map { .product(name: $0.product, package: $0.package) },
-            path: "Sources/SwiftGitKit"
+            path: "Sources/SwiftGitKit",
+            resources: [.copy("Resources/Grammars")]
         ),
         .executableTarget(
             name: "SwiftGit",

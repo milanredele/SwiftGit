@@ -217,3 +217,35 @@ struct HighlightQueryCost {
         try out.write(to: UI.snapshotDir.appendingPathComponent("query-cost.txt"), atomically: true, encoding: .utf8)
     }
 }
+
+/// Memory of the TextMate grammars: parsed rules plus compiled regexes.
+@MainActor
+@Suite("TextMate memory", .serialized, .disabled(if: !MemoryTests.measuring))
+struct TextMateMemory {
+    @Test func grammarMemory() throws {
+        var lines: [String] = []
+        let registry = TMRegistry()
+        var total = 0
+        for scope in registry.allScopeNames {
+            let before = HighlightQueryCost.inUse()
+            guard let g = registry.grammar(scope: scope) else { continue }
+            let parsed = HighlightQueryCost.inUse()
+            var seen = Set<Int>()
+            func walk(_ r: TMRule) {
+                guard seen.insert(r.id).inserted else { return }
+                for p in [r.match, r.begin, r.endPattern, r.whileRegex].compactMap({ $0 }) { _ = p.regex(atAnchor: false, atFileStart: false) }
+                r.patterns.forEach(walk)
+                r.repository.values.forEach(walk)
+            }
+            walk(g.root)
+            let compiled = HighlightQueryCost.inUse()
+            total += compiled - before
+            lines.append(String(format: "%@: parsed %.2f MB, regexes %.2f MB", scope,
+                                Double(parsed - before) / 1_048_576, Double(compiled - parsed) / 1_048_576))
+        }
+        lines.append(String(format: "All grammars loaded and compiled: %.1f MB", Double(total) / 1_048_576))
+        let out = lines.joined(separator: "\n")
+        print("DIAG textmate memory\n" + out)
+        try out.write(to: UI.snapshotDir.appendingPathComponent("textmate-memory.txt"), atomically: true, encoding: .utf8)
+    }
+}

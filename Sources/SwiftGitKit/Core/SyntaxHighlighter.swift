@@ -189,6 +189,11 @@ final class SyntaxHighlighter: @unchecked Sendable {
         }
     }
 
+    /// True if the file gets colors: a tree-sitter grammar or a bundled TextMate grammar.
+    func canHighlight(path: String) -> Bool {
+        languageID(forPath: path) != nil || TMRegistry.shared.scopeName(forPath: path) != nil
+    }
+
     func isSupported(path: String) -> Bool {
         guard let id = languageID(forPath: path) else { return false }
         return spec(id) != nil
@@ -199,8 +204,12 @@ final class SyntaxHighlighter: @unchecked Sendable {
     /// Highlights `text` and returns spans keyed by 1-based line number,
     /// only for the lines in `lines`.
     func highlight(_ text: String, path: String, lines: Set<Int>) -> [Int: [SyntaxSpan]]? {
-        guard !lines.isEmpty, text.utf8.count <= SyntaxHighlighter.maxBytes(forPath: path),
-              let id = languageID(forPath: path), let spec = spec(id) else { return nil }
+        guard !lines.isEmpty, text.utf8.count <= SyntaxHighlighter.maxBytes(forPath: path) else { return nil }
+        guard let id = languageID(forPath: path) else {
+            // No tree-sitter grammar: try the bundled TextMate grammars.
+            return TMRegistry.shared.highlight(text, path: path, lines: lines)
+        }
+        guard let spec = spec(id) else { return nil }
 
         let utf16 = Array(text.utf16)
         let ns = NSString(characters: utf16, length: utf16.count)
