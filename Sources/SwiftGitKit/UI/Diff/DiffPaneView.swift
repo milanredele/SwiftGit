@@ -32,14 +32,33 @@ final class DiffPaneView: NSView {
     override var acceptsFirstResponder: Bool { true }
     override var isOpaque: Bool { true }
 
+    /// Longest line (in columns) the view scrolls to; longer lines are cut off.
+    static let maxDisplayColumns = 1_000_000
+
+    /// Tab-expanded text of long lines, so repaints don't rebuild them.
+    private var longLineCache: [Int: NSString] = [:]
+    private weak var cachedDiff: FileDiff?
+
     func reload() {
+        longLineCache.removeAll()
         updateSize()
         needsDisplay = true
     }
 
+    private func lineText(_ diff: FileDiff, _ li: Int) -> NSString {
+        if cachedDiff !== diff { longLineCache.removeAll(); cachedDiff = diff }
+        if let s = longLineCache[li] { return s }
+        let s = DiffPaneView.expandTabs(diff.text(li)) as NSString
+        if s.length > 2_000 {
+            if longLineCache.count > 32 { longLineCache.removeAll() }
+            longLineCache[li] = s
+        }
+        return s
+    }
+
     func updateSize() {
         let visible = enclosingScrollView?.contentSize ?? NSSize(width: 100, height: 100)
-        let cols = CGFloat(diff?.maxColumns ?? 0)
+        let cols = CGFloat(min(diff?.maxColumns ?? 0, DiffPaneView.maxDisplayColumns))
         let width = max(visible.width, textInset * 2 + cols * charWidth + 24)
         let height = max(visible.height, CGFloat(rows.count) * rowHeight + 4)
         if frame.size != NSSize(width: width, height: height) {
@@ -69,7 +88,10 @@ final class DiffPaneView: NSView {
         let first = max(0, Int(dirtyRect.minY / rowHeight))
         let last = min(rows.count - 1, Int(dirtyRect.maxY / rowHeight))
         guard first <= last else { return }
-        let maxChars = max(0, Int((dirtyRect.maxX - textInset) / charWidth) + 4)
+        // Only the visible columns are laid out, so very long lines (minified
+        // JSON, generated code) cost as much as short ones.
+        let firstCol = max(0, Int((dirtyRect.minX - textInset) / charWidth) - 2)
+        let endCol = min(DiffPaneView.maxDisplayColumns, max(0, Int((dirtyRect.maxX - textInset) / charWidth) + 4))
 
         for r in first...last {
             let row = rows[r]
@@ -104,27 +126,28 @@ final class DiffPaneView: NSView {
                 rect.fill()
             }
 
-            let text = DiffPaneView.expandTabs(diff.text(li))
-            let attr = NSMutableAttributedString(string: text, attributes: [
+            let full = lineText(diff, li)
+            guard full.length > firstCol else { continue }
+            let slice = NSRange(location: firstCol, length: min(full.length, endCol) - firstCol)
+            guard slice.length > 0 else { continue }
+            let attr = NSMutableAttributedString(string: full.substring(with: slice), attributes: [
                 .font: font, .foregroundColor: NSColor.textColor])
+            /// Adds an attribute for a range given in whole-line offsets.
+            func apply(_ key: NSAttributedString.Key, _ value: Any, _ range: NSRange) {
+                guard range.location + range.length <= full.length else { return }
+                let r = NSIntersectionRange(range, slice)
+                guard r.length > 0 else { return }
+                attr.addAttribute(key, value: value, range: NSRange(location: r.location - firstCol, length: r.length))
+            }
             if row.kind == .changed, side != .unified, let ranges = controller?.intraline(row: r) {
                 let list = side == .left ? ranges.old : ranges.new
                 let color = side == .left ? Theme.deletedWord : Theme.addedWord
-                let length = attr.length
-                for range in list where range.location + range.length <= length {
-                    attr.addAttribute(.backgroundColor, value: color, range: range)
-                }
+                for range in list { apply(.backgroundColor, color, range) }
             }
             if let hl = controller?.syntaxColors(lineIndex: li) {
-                let length = attr.length
-                for (range, color) in hl where range.location + range.length <= length {
-                    attr.addAttribute(.foregroundColor, value: color, range: range)
-                }
+                for (range, color) in hl { apply(.foregroundColor, color, range) }
             }
-            if attr.length > maxChars {
-                attr.deleteCharacters(in: NSRange(location: maxChars, length: attr.length - maxChars))
-            }
-            attr.draw(at: NSPoint(x: textInset, y: y + baselineOffset))
+            attr.draw(at: NSPoint(x: textInset + CGFloat(firstCol) * charWidth, y: y + baselineOffset))
         }
     }
 

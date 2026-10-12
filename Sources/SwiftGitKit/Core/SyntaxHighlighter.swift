@@ -58,6 +58,14 @@ final class SyntaxHighlighter: @unchecked Sendable {
     static let shared = SyntaxHighlighter()
 
     static let maxBytes = 1_000_000
+    /// JSON parses quickly and is often large (fixtures, lock files, exports).
+    static let maxJSONBytes = 8_000_000
+    /// Spans past this column of a line are not kept (minified files).
+    static let maxSpanColumn = 100_000
+
+    static func maxBytes(forPath path: String) -> Int {
+        shared.languageID(forPath: path) == "json" ? maxJSONBytes : maxBytes
+    }
 
     private final class Spec {
         let language: Language
@@ -100,7 +108,7 @@ final class SyntaxHighlighter: @unchecked Sendable {
         case "sh", "bash", "zsh": return "bash"
         case "rb", "rake", "gemspec": return "ruby"
         case "css": return "css"
-        case "html", "htm", "xhtml": return "html"
+        case "html", "htm", "xhtml", "svg": return "html"   // SVG is XML; the HTML grammar covers tags, attributes and strings
         case "cs": return "csharp"
         case "ads", "adb", "ada": return "ada"
         default: return nil
@@ -191,7 +199,7 @@ final class SyntaxHighlighter: @unchecked Sendable {
     /// Highlights `text` and returns spans keyed by 1-based line number,
     /// only for the lines in `lines`.
     func highlight(_ text: String, path: String, lines: Set<Int>) -> [Int: [SyntaxSpan]]? {
-        guard !lines.isEmpty, text.utf8.count <= SyntaxHighlighter.maxBytes,
+        guard !lines.isEmpty, text.utf8.count <= SyntaxHighlighter.maxBytes(forPath: path),
               let id = languageID(forPath: path), let spec = spec(id) else { return nil }
 
         let utf16 = Array(text.utf16)
@@ -204,10 +212,10 @@ final class SyntaxHighlighter: @unchecked Sendable {
             guard range.location >= 0, range.location + range.length <= ns.length else { return nil }
             return ns.substring(with: range)
         })
-        let named = spec.query.execute(in: tree).resolve(with: context).highlights()
 
         var lineStarts = [0]
         for (i, c) in utf16.enumerated() where c == 10 { lineStarts.append(i + 1) }
+        func lineEnd(_ line: Int) -> Int { line + 1 < lineStarts.count ? lineStarts[line + 1] - 1 : utf16.count }
 
         func lineIndex(containing offset: Int) -> Int {
             var lo = 0, hi = lineStarts.count - 1
@@ -218,33 +226,63 @@ final class SyntaxHighlighter: @unchecked Sendable {
             return lo
         }
 
-        /// Offset within the line after tabs are expanded to 4 spaces (as drawn).
-        func expanded(_ lineStart: Int, _ offset: Int) -> Int {
-            var extra = 0
-            var i = lineStart
-            while i < offset { if utf16[i] == 9 { extra += 3 }; i += 1 }
-            return offset - lineStart + extra
+        // Offset within the line after tabs are expanded to 4 spaces (as drawn):
+        // tab positions are collected once per line, then counted by binary search.
+        var tabs: [Int: [Int]] = [:]
+        func expanded(_ line: Int, _ offset: Int) -> Int {
+            let lineStart = lineStarts[line]
+            let positions: [Int]
+            if let cached = tabs[line] {
+                positions = cached
+            } else {
+                var p: [Int] = []
+                var i = lineStart
+                let end = lineEnd(line)
+                while i < end { if utf16[i] == 9 { p.append(i) }; i += 1 }
+                tabs[line] = p
+                positions = p
+            }
+            guard !positions.isEmpty else { return offset - lineStart }
+            var lo = 0, hi = positions.count
+            while lo < hi { let mid = (lo + hi) / 2; if positions[mid] < offset { lo = mid + 1 } else { hi = mid } }
+            return offset - lineStart + 3 * lo
+        }
+
+        // Run the query only over the lines the diff shows (grouped into blocks),
+        // not the whole file: big files would otherwise produce millions of captures.
+        let wanted = lines.filter { $0 >= 1 && $0 <= lineStarts.count }.sorted()
+        var blocks: [(Int, Int)] = []   // 0-based first/last line
+        for l in wanted {
+            if let last = blocks.last, l - 1 <= last.1 + 4 { blocks[blocks.count - 1].1 = l - 1 } else { blocks.append((l - 1, l - 1)) }
         }
 
         var result: [Int: [SyntaxSpan]] = [:]
-        for nr in named {
-            guard let style = SyntaxStyle(captureName: nr.name) else { continue }
-            let r = nr.range
-            guard r.length > 0, r.location >= 0, r.location + r.length <= utf16.count else { continue }
-            var loc = r.location
-            let end = r.location + r.length
-            var line = lineIndex(containing: loc)
-            while loc < end && line < lineStarts.count {
-                let lineStart = lineStarts[line]
-                let lineEnd = line + 1 < lineStarts.count ? lineStarts[line + 1] - 1 : utf16.count
-                let segEnd = min(end, lineEnd)
-                if segEnd > loc, lines.contains(line + 1) {
-                    let s = expanded(lineStart, loc)
-                    let e = expanded(lineStart, segEnd)
-                    result[line + 1, default: []].append(SyntaxSpan(start: Int32(s), length: Int32(e - s), style: style))
+        for (firstLine, lastLine) in blocks {
+            let from = lineStarts[firstLine]
+            // Spans past maxSpanColumn are dropped anyway: don't query a minified line to its end.
+            let to = min(lineEnd(lastLine), lineStarts[lastLine] + SyntaxHighlighter.maxSpanColumn)
+            let cursor = spec.query.execute(in: tree)
+            cursor.setRange(NSRange(location: from, length: max(0, to - from)))
+            let named = cursor.resolve(with: context).highlights()
+            for nr in named {
+                guard let style = SyntaxStyle(captureName: nr.name) else { continue }
+                let r = nr.range
+                guard r.length > 0, r.location >= 0, r.location + r.length <= utf16.count else { continue }
+                var loc = max(r.location, from)
+                let end = min(r.location + r.length, to)
+                guard loc < end else { continue }
+                var line = lineIndex(containing: loc)
+                while loc < end && line < lineStarts.count {
+                    let lineStart = lineStarts[line]
+                    let segEnd = min(end, lineEnd(line))
+                    if segEnd > loc, lines.contains(line + 1), loc - lineStart < SyntaxHighlighter.maxSpanColumn {
+                        let s = expanded(line, loc)
+                        let e = expanded(line, segEnd)
+                        result[line + 1, default: []].append(SyntaxSpan(start: Int32(s), length: Int32(e - s), style: style))
+                    }
+                    line += 1
+                    loc = line < lineStarts.count ? lineStarts[line] : end
                 }
-                line += 1
-                loc = line < lineStarts.count ? lineStarts[line] : end
             }
         }
         return result

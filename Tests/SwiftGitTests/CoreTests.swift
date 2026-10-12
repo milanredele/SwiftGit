@@ -1,4 +1,5 @@
 import Foundation
+import SwiftTreeSitter
 import Testing
 @testable import SwiftGitKit
 
@@ -781,6 +782,57 @@ struct CoreTests {
         } else {
             Issue.record("expected a failure for a range with merges")
         }
+    }
+
+    @Test func svgUsesTheHTMLGrammar() throws {
+        let svg = "<svg width=\"10\">\n  <path d=\"M0 0\"/>\n</svg>\n"
+        #expect(SyntaxHighlighter.shared.languageID(forPath: "icons/logo.svg") == "html")
+        let spans = try #require(SyntaxHighlighter.shared.highlight(svg, path: "logo.svg", lines: [1, 2]))
+        let styles = Set((spans[1] ?? []).map(\.style) + (spans[2] ?? []).map(\.style))
+        #expect(styles.contains(.tag) && styles.contains(.attribute) && styles.contains(.string), "\(styles)")
+    }
+
+    @Test func largeAndMinifiedJSONHighlighting() throws {
+        // ~3.5 MB on one line: above the general 1 MB limit, within the JSON one.
+        let item = #"{"id":12345,"name":"item","tags":["a","b"],"ok":true,"v":null},"#
+        let minified = "[" + String(repeating: item, count: 55_000) + "{}]"
+        #expect(minified.utf8.count > SyntaxHighlighter.maxBytes)
+        #expect(minified.utf8.count < SyntaxHighlighter.maxJSONBytes)
+        _ = SyntaxHighlighter.shared.highlight("[]", path: "x.json", lines: [1])   // compile the query first
+        var start = Date()
+        let spans = try #require(SyntaxHighlighter.shared.highlight(minified, path: "data.json", lines: [1]))
+        let minifiedTime = Date().timeIntervalSince(start)
+        print(String(format: "DIAG json parse only: %.2f s", parseTime))
+        do {
+            let lang = Language(language: SyntaxHighlighter.shared.definition("json")!.0!)
+            let qtext = SyntaxHighlighter.shared.queryText("TreeSitterJSON_TreeSitterJSON", "highlights")!
+            let q = try Query(language: lang, data: Data(qtext.utf8))
+            let tree = p.parse(minified)!
+            var t = Date()
+            let c1 = q.execute(in: tree)
+            c1.setRange(NSRange(location: 0, length: 100_000))
+            var n1 = 0
+            while c1.next() != nil { n1 += 1 }
+            let rangedTime = Date().timeIntervalSince(t)
+            t = Date()
+            let c2 = q.execute(in: tree)
+            c2.setRange(NSRange(location: 0, length: 100_000))
+            let h = c2.resolve(with: Predicate.Context(textProvider: { _, _ in nil })).highlights()
+            print(String(format: "DIAG json query: ranged iterate %d matches %.2f s; resolve+highlights %d in %.2f s", n1, rangedTime, h.count, Date().timeIntervalSince(t)))
+        }
+        let line = try #require(spans[1])
+        #expect(!line.isEmpty)
+        #expect(line.allSatisfy { Int($0.start) < SyntaxHighlighter.maxSpanColumn })
+        #expect(SyntaxHighlighter.shared.highlight(minified, path: "data.txt", lines: [1]) == nil)
+
+        // Pretty-printed: only the requested lines get spans.
+        let pretty = (0..<60_000).map { "  {\"id\": \($0), \"name\": \"x\"}," }.joined(separator: "\n")
+        start = Date()
+        let some = try #require(SyntaxHighlighter.shared.highlight("[\n" + pretty + "\n]", path: "data.json", lines: [30_000, 30_001]))
+        let prettyTime = Date().timeIntervalSince(start)
+        #expect(Set(some.keys) == [30_000, 30_001])
+        print(String(format: "DIAG json highlight: minified %.2f s (%d spans), pretty 60k lines %.2f s", minifiedTime, line.count, prettyTime))
+        #expect(minifiedTime < 5 && prettyTime < 5)
     }
 }
 

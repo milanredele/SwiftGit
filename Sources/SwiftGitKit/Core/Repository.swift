@@ -994,13 +994,18 @@ final class Repository {
     /// missing, binary or too large.
     func fileText(_ version: FileVersion) async -> String? {
         let data: Data
+        let limit: Int
+        switch version {
+        case .none: limit = 0
+        case .worktree(let p), .index(let p), .commit(_, let p): limit = SyntaxHighlighter.maxBytes(forPath: p)
+        }
         switch version {
         case .none:
             return nil
         case .worktree(let path):
             let url = root.appendingPathComponent(path)
             guard let attrs = try? FileManager.default.attributesOfItem(atPath: url.path),
-                  let size = attrs[.size] as? Int, size <= SyntaxHighlighter.maxBytes,
+                  let size = attrs[.size] as? Int, size <= limit,
                   let d = try? Data(contentsOf: url) else { return nil }
             data = d
         case .index(let path):
@@ -1012,7 +1017,7 @@ final class Repository {
             guard r.ok else { return nil }
             data = r.stdout
         }
-        guard data.count <= SyntaxHighlighter.maxBytes, !data.prefix(8000).contains(0) else { return nil }
+        guard data.count <= limit, !data.prefix(8000).contains(0) else { return nil }
         return String(decoding: data, as: UTF8.self)
     }
 

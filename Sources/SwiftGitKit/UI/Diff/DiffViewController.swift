@@ -602,6 +602,10 @@ final class DiffViewController: NSViewController {
         guard let d = diff, r < rows.count else { return nil }
         let row = rows[r]
         guard row.kind == .changed, row.left >= 0, row.right >= 0 else { return nil }
+        if Int(d.lines[Int(row.left)].length) + Int(d.lines[Int(row.right)].length) > 4000 {
+            intralineCache[r] = ([], [])
+            return ([], [])
+        }
         let a = DiffPaneView.expandTabs(d.text(Int(row.left)))
         let b = DiffPaneView.expandTabs(d.text(Int(row.right)))
         let result = (a.utf16.count + b.utf16.count) > 4000 ? ([], []) : Intraline.compute(a, b)

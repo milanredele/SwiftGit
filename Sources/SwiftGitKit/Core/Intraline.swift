@@ -26,7 +26,11 @@ enum Intraline {
 
     /// Returns changed ranges in `a` and `b`. Empty when the lines are too
     /// different for word highlighting to be useful.
+    /// Lines longer than this (UTF-16 units) get no word highlighting.
+    static let maxLineLength = 20_000
+
     static func compute(_ aStr: String, _ bStr: String) -> (old: [NSRange], new: [NSRange]) {
+        guard aStr.utf16.count <= maxLineLength, bStr.utf16.count <= maxLineLength else { return ([], []) }
         let a = Array(aStr.utf16), b = Array(bStr.utf16)
         let ta = tokens(a), tb = tokens(b)
         let n = ta.count, m = tb.count

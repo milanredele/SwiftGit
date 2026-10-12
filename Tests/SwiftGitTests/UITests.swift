@@ -460,5 +460,42 @@ struct UITests {
         Prompt.headlessAnswers = []
         wc.window?.close()
     }
+
+    @Test func veryLongLinesDrawQuickly() async throws {
+        UI.setUpApp()
+        let dir = try Fixture.makeRepo()
+        let item = #"{"id":1,"name":"item","tags":["a","b"]},"#
+        let before = "[" + String(repeating: item, count: 30_000) + "{}]\n"   // 1.2 MB line, under the 3 MB diff limit
+        try Fixture.write(dir, "data.json", before)
+        try Fixture.git(["add", "data.json"], in: dir)
+        try Fixture.git(["commit", "-q", "-m", "data", "--", "data.json"], in: dir)
+        try Fixture.write(dir, "data.json", before.replacingOccurrences(of: "{}]", with: #"{"id":2}]"#))
+        let repo = try await Repository.open(dir)
+        await repo.refreshAll()
+        let change = try #require(repo.status.unstaged.first { $0.path == "data.json" })
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1000, height: 400), styleMask: [.titled], backing: .buffered, defer: false)
+        let diff = DiffViewController(repository: repo)
+        window.contentViewController = diff
+        diff.show(.working(change, staged: false))
+        await UI.wait("rows", timeout: 20) { diff.testRowCount > 0 }
+        await UI.settle(window)
+        await UI.wait("syntax", timeout: 20) { diff.testSyntaxLineCount > 0 }
+        let pane = diff.testBody.rightScroll.documentView!
+        var times: [TimeInterval] = []
+        for _ in 0..<5 {
+            let start = Date()
+            pane.display()
+            times.append(Date().timeIntervalSince(start))
+        }
+        // Scroll far right and draw again.
+        diff.testBody.rightScroll.contentView.scroll(to: NSPoint(x: 50_000, y: 0))
+        let start = Date()
+        pane.display()
+        times.append(Date().timeIntervalSince(start))
+        print("DIAG long line draw times:", times.map { String(format: "%.1f ms", $0 * 1000) })
+        #expect(times.max()! < 0.1, "\(times)")
+        UI.snapshot(window, "long-line")
+        window.close()
+    }
 }
 
