@@ -416,5 +416,49 @@ struct UITests {
         #expect(sheet.steps.first?.action == .reword)
         window.close()
     }
+
+    @Test func pullAfterBranchWasMergedAndDeletedOffersDefaultBranch() async throws {
+        UI.setUpApp()
+        let dir = try Fixture.makeRepo()
+        try Fixture.git(["stash", "-q", "--include-untracked"], in: dir)
+        let parent = dir.deletingLastPathComponent()
+        let bare = parent.appendingPathComponent(dir.lastPathComponent + "-gone.git")
+        let other = parent.appendingPathComponent(dir.lastPathComponent + "-gone-other")
+        try Fixture.git(["init", "-q", "--bare", bare.path], in: parent)
+        try Fixture.git(["remote", "add", "origin", bare.path], in: dir)
+        try Fixture.git(["push", "-q", "-u", "origin", "main"], in: dir)
+        try Fixture.git(["remote", "set-head", "origin", "main"], in: dir)
+        try Fixture.git(["switch", "-q", "-c", "topic/pr"], in: dir)
+        try Fixture.write(dir, "pr.txt", "pr\n")
+        try Fixture.git(["add", "pr.txt"], in: dir)
+        try Fixture.git(["commit", "-q", "-m", "feat: pr work"], in: dir)
+        try Fixture.git(["push", "-q", "-u", "origin", "topic/pr"], in: dir)
+        // Elsewhere: squash-merge the PR into main and delete its branch.
+        try Fixture.git(["clone", "-q", bare.path, other.path], in: parent)
+        try Fixture.git(["merge", "-q", "--squash", "origin/topic/pr"], in: other)
+        try Fixture.git(["commit", "-q", "-m", "feat: pr work (#1)"], in: other)
+        try Fixture.git(["push", "-q", "origin", "main", ":topic/pr"], in: other)
+
+        let repo = try await Repository.open(dir)
+        let wc = RepoWindowController(repository: repo)
+        await repo.refreshAll()
+        #expect(repo.currentBranch == "topic/pr")
+        #expect(repo.defaultBranch?.local == "main")
+
+        // Without a pruning fetch git doesn't know yet: pull fails and is explained.
+        Prompt.headlessLog = []
+        Prompt.headlessAnswers = [0]   // "Switch to main and Pull", delete option at its default (on: merged)
+        await wc.pullInteractively(mode: .merge)
+        #expect(Prompt.headlessLog.first?.hasPrefix("topic/pr was deleted on the remote") == true, "\(Prompt.headlessLog)")
+        #expect(Prompt.headlessLog.first?.contains("squash") == true, "\(Prompt.headlessLog)")
+        #expect(repo.currentBranch == "main")
+        #expect(repo.localBranch(named: "topic/pr") == nil)
+        #expect(repo.status.behind == 0)
+        #expect(try Fixture.git(["log", "-1", "--format=%s"], in: dir).trimmingCharacters(in: .whitespacesAndNewlines) == "feat: pr work (#1)")
+        // Deleting the branch can be undone.
+        #expect(repo.undoStack.contains { if case .deleteBranch("topic/pr", _) = $0.kind { return true } else { return false } })
+        Prompt.headlessAnswers = []
+        wc.window?.close()
+    }
 }
 

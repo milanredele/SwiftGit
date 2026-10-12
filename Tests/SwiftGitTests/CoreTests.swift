@@ -622,6 +622,8 @@ struct CoreTests {
         #expect(try #require(repo.undoCandidate).title == "Pull")
 
         #expect(PullProblem.classify("fatal: Not possible to fast-forward, aborting.") == .notFastForward)
+        #expect(PullProblem.classify("Your configuration specifies to merge with the ref 'refs/heads/x'\nfrom the remote, but no such ref was fetched.") == .upstreamGone)
+        #expect(PullProblem.classify("fatal: couldn't find remote ref refs/heads/x") == .upstreamGone)
         #expect(PullMode.rebase.arguments == ["--rebase"])
         #expect(PullMode.gitConfig.arguments.isEmpty)
     }

@@ -630,6 +630,29 @@ final class Repository {
         return remotes.first?.name
     }
 
+    /// The repository's default branch as a local branch name, plus the remote
+    /// branch it comes from (e.g. ("main", "origin/main")).
+    var defaultBranch: (local: String, remote: String?)? {
+        guard let main = mainBranch else { return nil }
+        if let ref = refs.first(where: { $0.kind == .remote && $0.name == main }), let branch = ref.remoteBranch {
+            return (branch, main)
+        }
+        return (main, nil)
+    }
+
+    /// Checks out the default branch (creating it from the remote if needed).
+    /// Returns false if that didn't happen (errors are reported).
+    @discardableResult
+    func switchToDefaultBranch() async -> Bool {
+        guard let d = defaultBranch else { return false }
+        if localBranch(named: d.local) != nil {
+            await checkout(branch: d.local)
+        } else if let remote = d.remote, let ref = refs.first(where: { $0.kind == .remote && $0.name == remote }) {
+            await checkout(remote: ref)
+        }
+        return currentBranch == d.local
+    }
+
     /// The GitHub repository behind the preferred remote (or the first GitHub remote).
     var gitHubRemote: (repo: GitHubRepo, remote: String)? {
         let preferred = preferredRemote

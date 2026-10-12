@@ -322,7 +322,16 @@ final class RepoWindowController: NSWindowController, NSWindowDelegate, NSToolba
     /// Pulls; if uncommitted changes are in the way, offers to stash them,
     /// pull and re-apply them (git's --autostash).
     func pullHandlingLocalChanges(mode: PullMode) {
-        Task {
+        Task { await pullInteractively(mode: mode) }
+    }
+
+    func pullInteractively(mode: PullMode) async {
+        do {
+            // Upstream already known to be deleted (e.g. after a fetch with --prune): don't even try.
+            if let branch = repository.currentBranch, let ref = repository.localBranch(named: branch), ref.upstreamGone {
+                await offerSwitchToDefaultBranch(from: ref, mode: mode)
+                return
+            }
             let autostash = Settings.autostash
             let r = await repository.pullResult(mode: mode, autostash: autostash, reportErrors: false)
             if r.ok {
@@ -350,10 +359,50 @@ final class RepoWindowController: NSWindowController, NSWindowDelegate, NSToolba
             case .notFastForward:
                 showError("Pull", "Your branch and its upstream have diverged, so it can’t be fast-forwarded. "
                           + "Use Pull (Rebase), or change the pull mode in Settings.\n\n" + r.errorMessage)
+            case .upstreamGone:
+                await repository.refreshRefs()
+                if let branch = repository.currentBranch, let ref = repository.localBranch(named: branch) {
+                    await offerSwitchToDefaultBranch(from: ref, mode: mode)
+                } else {
+                    showError("Pull", r.errorMessage)
+                }
             default:
                 showError("Pull", r.errorMessage)
             }
         }
+    }
+
+    /// The current branch's remote branch is gone — usually its PR was merged
+    /// and the branch deleted. Offers to check out the default branch, pull it
+    /// and (if the work is merged) delete the local branch.
+    func offerSwitchToDefaultBranch(from ref: RefInfo, mode: PullMode) async {
+        let upstream = ref.upstream ?? "its remote branch"
+        guard let target = repository.defaultBranch, target.local != ref.name else {
+            showError("Pull", "\(upstream) no longer exists on the remote, so there is nothing to pull for \(ref.name).")
+            return
+        }
+        let report = await repository.mergeReport(for: ref)
+        let info = await repository.deletionInfo(for: ref)
+        let main = target.remote ?? target.local
+        var message = "\(upstream) no longer exists on the remote — usually because its pull request was merged and the branch was deleted.\n\n"
+        if report.merged {
+            let ancestor = await repository.git.run(["merge-base", "--is-ancestor", ref.fullName, main]).ok
+            message += "Its changes are in \(main)" + (ancestor ? " (merged)." : " (squash- or rebase-merged).")
+        } else if info.uniqueCommits > 0 {
+            message += "Careful: \(main) doesn’t seem to contain its changes yet; \(Self.commits(info.uniqueCommits)) exist only on \(ref.name)."
+        } else {
+            message += "It has no commits of its own."
+        }
+        message += "\n\nSwitch to \(target.local) and pull it?"
+        let deleteLabel = "Also delete the local branch \(ref.name)" + (report.merged || info.uniqueCommits == 0 ? "" : " (its commits would only be reachable through Undo)")
+        guard let deleteBranch = await Prompt.confirm(window, title: "\(ref.name) was deleted on the remote", message: message,
+                                                      ok: "Switch to \(target.local) and Pull", destructive: false,
+                                                      option: deleteLabel, optionOn: report.merged || info.uniqueCommits == 0) else { return }
+        guard await repository.switchToDefaultBranch() else { return }
+        if deleteBranch {
+            await repository.deleteBranch(ref.name, force: true)
+        }
+        await pullInteractively(mode: mode)
     }
 
     private func explainAutostash(_ r: RunResult) async {

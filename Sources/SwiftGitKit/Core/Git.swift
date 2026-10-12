@@ -381,10 +381,15 @@ enum PullProblem: Equatable {
     case localChanges
     /// Fast-forward only was requested but the branches diverged.
     case notFastForward
+    /// The upstream branch no longer exists on the remote (e.g. deleted after its PR was merged).
+    case upstreamGone
     case other
 
     static func classify(_ output: String) -> PullProblem {
         let s = output.lowercased()
+        if s.contains("no such ref was fetched") || s.contains("couldn't find remote ref") {
+            return .upstreamGone
+        }
         if s.contains("would be overwritten by") || s.contains("you have unstaged changes")
             || s.contains("your index contains uncommitted changes") || s.contains("commit your changes or stash them") {
             return .localChanges
