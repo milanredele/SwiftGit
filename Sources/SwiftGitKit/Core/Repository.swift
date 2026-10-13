@@ -71,6 +71,8 @@ final class Repository {
     private var lastBackgroundFetch: Date { Repository.sharedFetches[commonDir.path]?.last ?? .distantPast }
     /// Roots of other worktrees inside this one's folder (their file events are ignored).
     var otherWorktreeRoots: [String] = []
+    /// All worktrees of the repository (`git worktree list`), main first.
+    private(set) var worktrees: [WorktreeInfo] = []
     private(set) var lastBackgroundFetchError: String?
     /// Open pull requests by head branch name (GitHub remotes only).
     private(set) var pullRequests: [String: PullRequestBadge] = [:]
@@ -112,9 +114,8 @@ final class Repository {
 
     /// Name of the repository (the main worktree's folder, or the bare repo's name).
     var repositoryName: String {
-        let parent = commonDir.lastPathComponent == ".git" ? commonDir.deletingLastPathComponent() : commonDir
-        let n = parent.lastPathComponent
-        return n.hasSuffix(".git") ? String(n.dropLast(4)) : n
+        // "repo/.git", "repo/.bare" (a common layout for bare repos with worktrees) or "repo.git".
+        WorktreeLocation.repositoryName(commonDir: commonDir)
     }
 
     /// Tab title: the folder name, or "repo › worktree" for linked worktrees.
@@ -276,11 +277,17 @@ final class Repository {
         async let refsResult = git.run(["for-each-ref", "--format=" + RefInfo.format, "refs/heads", "refs/remotes", "refs/tags"])
         async let stashResult = git.run(["stash", "list", "--format=%gd%x09%H%x09%s"])
         async let remoteResult = git.run(["remote", "-v"])
-        let (r1, r2, r3) = await (refsResult, stashResult, remoteResult)
+        async let worktreeResult = git.run(["worktree", "list", "--porcelain", "-z"])
+        let (r1, r2, r3, r4) = await (refsResult, stashResult, remoteResult, worktreeResult)
         guard gen == refsGeneration else { return }
         var newRefs = r1.ok ? RefInfo.parse(r1.output) : []
         stashes = r2.ok ? StashInfo.parse(r2.output) : []
         remotes = r3.ok ? RemoteInfo.parse(r3.output) : []
+        if r4.ok {
+            worktrees = WorktreeInfo.parse(r4.stdout)
+            let prefix = root.path + "/"
+            otherWorktreeRoots = worktrees.map(\.path).filter { $0.hasPrefix(prefix) || $0.hasPrefix("/private" + prefix) }.map { $0 + "/" }
+        }
 
         // Which local branches are already merged into the main branch?
         let remoteHeads = r1.ok ? RefInfo.parseRemoteHeads(r1.output) : [:]
@@ -663,7 +670,7 @@ final class Repository {
 
     @discardableResult
     func perform(_ title: String, _ args: [String], stdin: Data? = nil, environment: [String: String] = [:],
-                 reportErrors: Bool = true) async -> RunResult {
+                 reportErrors: Bool = true, in directory: URL? = nil) async -> RunResult {
         // Don't race a quiet background fetch for git's locks.
         if let fetch = backgroundFetchTask { await fetch.value }
         if let busy = activityTitle {
@@ -675,7 +682,8 @@ final class Repository {
         activityTitle = title
         activityDetail = ""
         notify(.activity)
-        let r = await git.run(args, stdin: stdin, environment: environment, cancel: token, onStderrLine: { [weak self] line in
+        let runner = directory.map { Git(root: $0) } ?? git
+        let r = await runner.run(args, stdin: stdin, environment: environment, cancel: token, onStderrLine: { [weak self] line in
             Task { @MainActor in self?.setActivityDetail(line) }
         })
         activityToken = nil
