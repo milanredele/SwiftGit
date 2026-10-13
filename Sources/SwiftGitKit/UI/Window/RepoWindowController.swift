@@ -21,6 +21,7 @@ final class RepoWindowController: NSWindowController, NSWindowDelegate, NSToolba
     let repository: Repository
     let state = TabState()
     var onClose: (() -> Void)?
+    weak var tabHost: RepositoryTabHost?
     private var root: RootViewController!
     private let modeControl = NSSegmentedControl(labels: ["History", "Changes"], trackingMode: .selectOne, target: nil, action: nil)
     private var unloadTask: Task<Void, Never>?
@@ -180,7 +181,7 @@ final class RepoWindowController: NSWindowController, NSWindowDelegate, NSToolba
     }
 
     func showError(_ title: String, _ message: String) {
-        errorQueue.append((title, message))
+        errorQueue.append((title, WorktreeProblem.explain(message) ?? message))
         guard !showingError else { return }
         showingError = true
         Task {
@@ -284,7 +285,7 @@ final class RepoWindowController: NSWindowController, NSWindowDelegate, NSToolba
         switch action {
         case #selector(fetch(_:)), #selector(pull(_:)), #selector(pullRebase(_:)), #selector(push(_:)),
              #selector(forcePush(_:)), #selector(newBranch(_:)), #selector(mergeBranch(_:)), #selector(rebaseBranch(_:)),
-             #selector(stashChanges(_:)):
+             #selector(stashChanges(_:)), #selector(newWorktree(_:)):
             return !busy
         case #selector(undoGitOperation(_:)):
             return !busy && repository.undoCandidate != nil
@@ -384,6 +385,25 @@ final class RepoWindowController: NSWindowController, NSWindowDelegate, NSToolba
         let report = await repository.mergeReport(for: ref)
         let info = await repository.deletionInfo(for: ref)
         let main = target.remote ?? target.local
+        if let other = repository.worktreeUsing(branch: target.local) {
+            // This worktree can't switch to the default branch: another one has it.
+            var message = "\(upstream) no longer exists on the remote — usually because its pull request was merged and the branch was deleted.\n\n"
+            message += report.merged ? "Its changes are in \(main).\n\n" : (info.uniqueCommits > 0 ? "Careful: \(Self.commits(info.uniqueCommits)) exist only on \(ref.name).\n\n" : "")
+            message += "\(target.local) is checked out in the worktree “\(other.name)”, so this one can’t switch to it."
+            var buttons = ["Open “\(other.name)”", "Cancel"]
+            if repository.isLinkedWorktree {
+                message += " If you’re done here, remove this worktree (and the branch)."
+                buttons.insert("Remove This Worktree…", at: 0)
+            }
+            let choice = await Prompt.buttons(window, title: "\(ref.name) was deleted on the remote", message: message, buttons: buttons)
+            let picked = buttons.indices.contains(choice) ? buttons[choice] : ""
+            if picked == "Remove This Worktree…", let me = repository.currentWorktree {
+                confirmRemoveWorktree(me)
+            } else if picked.hasPrefix("Open") {
+                openWorktree(other)
+            }
+            return
+        }
         var message = "\(upstream) no longer exists on the remote — usually because its pull request was merged and the branch was deleted.\n\n"
         if report.merged {
             let ancestor = await repository.git.run(["merge-base", "--is-ancestor", ref.fullName, main]).ok
@@ -649,6 +669,12 @@ final class RepoWindowController: NSWindowController, NSWindowDelegate, NSToolba
 
     func checkout(_ ref: RefInfo) {
         Task {
+            // A branch can be checked out in only one worktree.
+            let local = ref.kind == .local ? ref.name : ref.kind == .remote ? ref.remoteBranch : nil
+            if let local, let wt = repository.worktreeUsing(branch: local) {
+                await offerOpenWorktree(wt, branch: local)
+                return
+            }
             switch ref.kind {
             case .local: await repository.checkout(branch: ref.name)
             case .remote: await repository.checkout(remote: ref)
@@ -689,6 +715,15 @@ final class RepoWindowController: NSWindowController, NSWindowDelegate, NSToolba
         guard ref.kind == .local else { confirmDeleteRemote(ref); return }
         guard !ref.isHead else {
             showError("Delete \(ref.name)", "\(ref.name) is the checked-out branch. Check out another branch first.")
+            return
+        }
+        if let wt = repository.worktreeUsing(branch: ref.name) {
+            Task {
+                let choice = await Prompt.buttons(window, title: "“\(ref.name)” is checked out in the worktree “\(wt.name)”",
+                                                  message: "A branch can’t be deleted while a worktree has it checked out. Remove that worktree (you can delete the branch in the same step), or open it and switch it to another branch.",
+                                                  buttons: ["Remove Worktree…", "Open Worktree", "Cancel"])
+                if choice == 0 { confirmRemoveWorktree(wt) } else if choice == 1 { openWorktree(wt) }
+            }
             return
         }
         Task {

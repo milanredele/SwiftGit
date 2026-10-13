@@ -124,6 +124,26 @@ extension Repository {
         worktrees.first { $0.branch == branch && !samePath($0.path, root.path) }
     }
 
+    /// What to check out in a new worktree for what the user typed or picked:
+    /// a local branch, a remote branch (as a new local branch tracking it, or
+    /// the existing local branch of that name), or else a new branch from `start`.
+    func worktreeBranch(for text: String, start: String?) -> WorktreeBranch {
+        if localBranch(named: text) != nil { return .existing(text) }
+        if let remote = refs.first(where: { $0.kind == .remote && $0.name == text }), let local = remote.remoteBranch {
+            return localBranch(named: local) != nil ? .existing(local) : .new(name: local, start: text, track: true)
+        }
+        return .new(name: text, start: start ?? currentBranch ?? "HEAD", track: false)
+    }
+
+    /// The local branch name a new worktree for `text` would have.
+    func worktreeBranchName(for text: String) -> String {
+        switch worktreeBranch(for: text, start: nil) {
+        case .existing(let b): return b
+        case .new(let name, _, _): return name
+        case .detached(let c): return String(c.prefix(8))
+        }
+    }
+
     func defaultWorktreePath(for branch: String) -> URL {
         let main = worktrees.first.flatMap { $0.isMain && !$0.isBare ? $0.url : nil }
             ?? (isLinkedWorktree ? nil : root)
@@ -238,10 +258,15 @@ enum BareRepositoryWorktrees {
     }
 
     /// Local branches, most recently committed first, and remote branches.
-    static func branches(of commonDir: URL) async -> [String] {
-        let r = await Git(root: commonDir).run(["for-each-ref", "--format=%(refname:short)", "--sort=-committerdate",
+    static func branches(of commonDir: URL) async -> (local: [String], remote: [String]) {
+        let r = await Git(root: commonDir).run(["for-each-ref", "--format=%(refname)", "--sort=-committerdate",
                                                 "refs/heads", "refs/remotes"])
-        return r.output.split(separator: "\n").map(String.init).filter { !$0.hasSuffix("/HEAD") }
+        var local: [String] = [], remote: [String] = []
+        for line in r.output.split(separator: "\n") {
+            if line.hasPrefix("refs/heads/") { local.append(String(line.dropFirst(11))) }
+            else if line.hasPrefix("refs/remotes/"), !line.hasSuffix("/HEAD") { remote.append(String(line.dropFirst(13))) }
+        }
+        return (local, remote)
     }
 
     static func defaultFolder(_ commonDir: URL, branch: String) -> URL {
@@ -260,6 +285,14 @@ enum BareRepositoryWorktrees {
             let local = String(branch[branch.index(after: slash)...])
             return await git.run(["worktree", "add", "--track", "-b", local, path.path, branch])
         }
-        return await git.run(["worktree", "add", path.path, branch])
+        if isLocal { return await git.run(["worktree", "add", path.path, branch]) }
+        // A new branch from the repository's HEAD (its default branch).
+        return await git.run(["worktree", "add", "-b", branch, path.path, "HEAD"])
+    }
+
+    /// The local branch name a worktree for `branch` (local or remote) gets.
+    static func localName(_ branch: String, remoteBranches: Set<String>) -> String {
+        guard remoteBranches.contains(branch), let slash = branch.firstIndex(of: "/") else { return branch }
+        return String(branch[branch.index(after: slash)...])
     }
 }

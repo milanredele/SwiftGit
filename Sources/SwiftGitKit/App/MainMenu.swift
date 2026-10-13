@@ -29,6 +29,7 @@ import AppKit
     func findNextInHistory(_ sender: Any?)
     func findPreviousInHistory(_ sender: Any?)
     func recoverDiscarded(_ sender: Any?)
+    func newWorktree(_ sender: Any?)
 }
 
 enum MainMenu {
@@ -118,6 +119,7 @@ enum MainMenu {
         repo.addItem(.separator())
         let branch = repo.addItem(withTitle: "New Branch…", action: #selector(RepoActions.newBranch(_:)), keyEquivalent: "b")
         branch.keyEquivalentModifierMask = [.command, .shift]
+        repo.addItem(withTitle: "New Worktree…", action: #selector(RepoActions.newWorktree(_:)), keyEquivalent: "")
         repo.addItem(withTitle: "Merge into Current Branch…", action: #selector(RepoActions.mergeBranch(_:)), keyEquivalent: "")
         repo.addItem(withTitle: "Rebase Current Branch onto…", action: #selector(RepoActions.rebaseBranch(_:)), keyEquivalent: "")
         repo.addItem(withTitle: "Edit Recent Commits…", action: #selector(RepoActions.editRecentCommits(_:)), keyEquivalent: "")

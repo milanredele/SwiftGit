@@ -230,7 +230,9 @@ struct WorktreeTests {
             #expect(samePath(e.commonDir.path, bare.resolvingSymlinksInPath().path))
         }
         #expect(await BareRepositoryWorktrees.worktrees(of: bare).isEmpty)
-        #expect(await BareRepositoryWorktrees.branches(of: bare).contains("main"))
+        #expect(await BareRepositoryWorktrees.branches(of: bare).local.contains("main"))
+        #expect(BareRepositoryWorktrees.localName("origin/x/y", remoteBranches: ["origin/x/y"]) == "x/y")
+        #expect(BareRepositoryWorktrees.localName("x/y", remoteBranches: []) == "x/y")
         let target = BareRepositoryWorktrees.defaultFolder(bare, branch: "main")
         #expect(target.path == folder.appendingPathComponent("main").path)
         #expect(await BareRepositoryWorktrees.addWorktree(bare, path: target, branch: "main").ok)

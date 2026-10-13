@@ -1,30 +1,32 @@
 import AppKit
 
 final class SidebarNode {
-    enum Kind { case section, local, remoteGroup, remote, tag, stash }
+    enum Kind { case section, local, remoteGroup, remote, tag, stash, worktree }
     let kind: Kind
     let title: String
     var ref: RefInfo?
     var stash: StashInfo?
+    var worktree: WorktreeInfo?
     var children: [SidebarNode] = []
 
-    init(_ kind: Kind, _ title: String, ref: RefInfo? = nil, stash: StashInfo? = nil) {
+    init(_ kind: Kind, _ title: String, ref: RefInfo? = nil, stash: StashInfo? = nil, worktree: WorktreeInfo? = nil) {
         self.kind = kind
         self.title = title
         self.ref = ref
         self.stash = stash
+        self.worktree = worktree
     }
 
-    var key: String { "\(kind)-\(title)" }
+    var key: String { kind == .worktree ? "worktree-\(worktree?.path ?? title)" : "\(kind)-\(title)" }
 }
 
-/// Branches, remotes, tags and stashes.
+/// Branches, worktrees, remotes, tags and stashes.
 final class SidebarViewController: NSViewController, NSOutlineViewDataSource, NSOutlineViewDelegate, NSMenuDelegate {
     let repository: Repository
     weak var actions: RepoWindowController?
     private let outline = NSOutlineView()
     private var roots: [SidebarNode] = []
-    private var expanded: Set<String> = ["section-Branches", "section-Remotes"]
+    private var expanded: Set<String> = ["section-Branches", "section-Worktrees", "section-Remotes"]
     private var suppressSelection = false
 
     init(repository: Repository, actions: RepoWindowController?) {
@@ -99,8 +101,17 @@ final class SidebarViewController: NSViewController, NSOutlineViewDataSource, NS
         let stashes = SidebarNode(.section, "Stashes")
         stashes.children = repository.stashes.map { SidebarNode(.stash, $0.message, stash: $0) }
 
+        // Worktrees: shown once there is more than one (or a missing one to prune).
+        let openable = repository.openableWorktrees
+        var sections = [local]
+        if openable.count > 1 || openable.contains(where: \.isPrunable) {
+            let wts = SidebarNode(.section, "Worktrees")
+            wts.children = openable.map { SidebarNode(.worktree, $0.name, worktree: $0) }
+            sections.append(wts)
+        }
+
         let selectedKey = (outline.item(atRow: outline.selectedRow) as? SidebarNode)?.key
-        roots = [local, remotes, tags, stashes]
+        roots = sections + [remotes, tags, stashes]
         suppressSelection = true
         outline.reloadData()
         restoreExpansion(roots)
@@ -208,6 +219,11 @@ final class SidebarViewController: NSViewController, NSOutlineViewDataSource, NS
             return v
         }()
 
+        if n.kind == .worktree, let wt = n.worktree {
+            configureWorktree(v, wt)
+            return v
+        }
+
         let symbol: String
         switch n.kind {
         case .local: symbol = n.ref?.isHead == true ? "checkmark.circle.fill" : "arrow.triangle.branch"
@@ -215,7 +231,7 @@ final class SidebarViewController: NSViewController, NSOutlineViewDataSource, NS
         case .remote: symbol = "arrow.triangle.branch"
         case .tag: symbol = "tag"
         case .stash: symbol = "tray"
-        case .section: symbol = "folder"
+        case .section, .worktree: symbol = "folder"
         }
         v.imageView?.image = Theme.symbol(symbol, n.title)
         v.imageView?.contentTintColor = n.ref?.isHead == true ? .controlAccentColor : .secondaryLabelColor
@@ -238,6 +254,10 @@ final class SidebarViewController: NSViewController, NSOutlineViewDataSource, NS
                 let how = ref.mergedByContent ? "squash- or rebase-merged" : "fully merged"
                 tip = "\(ref.name) is \(how) into \(repository.mainBranch ?? "the main branch")."
             }
+            if let wt = repository.worktreeUsing(branch: ref.name) {
+                extra += "  ⎇ \(wt.name)"
+                tip = "\(ref.name) is checked out in the worktree “\(wt.name)”\n\(wt.path)\nDouble-click to open it." + (tip.map { "\n" + $0 } ?? "")
+            }
             if !extra.isEmpty {
                 title.append(NSAttributedString(string: extra, attributes: [
                     .font: NSFont.systemFont(ofSize: 11), .foregroundColor: NSColor.tertiaryLabelColor]))
@@ -251,6 +271,56 @@ final class SidebarViewController: NSViewController, NSOutlineViewDataSource, NS
         v.toolTip = tip
         return v
     }
+
+    private func configureWorktree(_ v: NSTableCellView, _ wt: WorktreeInfo) {
+        let isCurrent = samePath(wt.path, repository.root.path)
+        let symbol = wt.isPrunable ? "exclamationmark.triangle" : isCurrent ? "checkmark.circle.fill" : wt.isLocked ? "lock" : wt.isMain ? "house" : "folder"
+        v.imageView?.image = Theme.symbol(symbol, wt.name)
+        v.imageView?.contentTintColor = isCurrent ? .controlAccentColor : wt.isPrunable ? .systemOrange : .secondaryLabelColor
+        let title = NSMutableAttributedString(string: wt.name, attributes: [
+            .font: isCurrent ? NSFont.systemFont(ofSize: 12.5, weight: .semibold) : NSFont.systemFont(ofSize: 12.5),
+            .foregroundColor: wt.isPrunable ? NSColor.secondaryLabelColor : NSColor.labelColor,
+        ])
+        var extra = ""
+        if let b = wt.branch { extra += "  ⎇ \(b)" } else if let h = wt.head { extra += "  detached \(h.prefix(7))" }
+        if wt.isLocked { extra += "  locked" }
+        if wt.isPrunable { extra += "  missing" }
+        title.append(NSAttributedString(string: extra, attributes: [
+            .font: NSFont.systemFont(ofSize: 11), .foregroundColor: NSColor.tertiaryLabelColor]))
+        v.textField?.attributedStringValue = title
+        var tip = wt.path
+        if wt.isMain { tip += "\nThe main worktree (contains the repository)." }
+        if wt.isLocked { tip += "\nLocked" + (wt.lockReason.map { ": \($0)" } ?? "") }
+        if wt.isPrunable { tip += "\nThe folder no longer exists. Right-click › Prune." }
+        else if !isCurrent { tip += "\nDouble-click to open it in a tab." }
+        v.toolTip = tip
+    }
+
+    /// Text shown for the row of a worktree (tests).
+    func testWorktreeRowText(named name: String) -> String? {
+        for row in 0..<outline.numberOfRows {
+            guard let n = outline.item(atRow: row) as? SidebarNode, n.kind == .worktree, n.title == name,
+                  let v = outline.view(atColumn: 0, row: row, makeIfNecessary: true) as? NSTableCellView else { continue }
+            return v.textField?.stringValue
+        }
+        return nil
+    }
+
+    /// Context menu titles for a row (tests).
+    func testMenuTitles(row: Int) -> [String] {
+        let menu = NSMenu()
+        clickedRowOverride = row
+        defer { clickedRowOverride = nil }
+        menuNeedsUpdate(menu)
+        return menu.items.map(\.title)
+    }
+
+    func testRow(where match: (SidebarNode) -> Bool) -> Int? {
+        (0..<outline.numberOfRows).first { (outline.item(atRow: $0) as? SidebarNode).map(match) ?? false }
+    }
+
+    private var clickedRowOverride: Int?
+    private var clickedRow: Int { clickedRowOverride ?? outline.clickedRow }
 
     /// Text shown for the row of a branch (tests).
     func testRowText(named name: String) -> String? {
@@ -325,7 +395,7 @@ final class SidebarViewController: NSViewController, NSOutlineViewDataSource, NS
     func outlineViewSelectionDidChange(_ notification: Notification) {
         guard !suppressSelection, let n = outline.item(atRow: outline.selectedRow) as? SidebarNode else { return }
         if let ref = n.ref { repository.checkMergeStatus([ref]) }
-        let target = n.ref?.target ?? n.stash?.hash
+        let target = n.ref?.target ?? n.stash?.hash ?? n.worktree?.head
         if let target, let hash = Hash20(target) { actions?.reveal(commit: hash) }
     }
 
@@ -334,6 +404,8 @@ final class SidebarViewController: NSViewController, NSOutlineViewDataSource, NS
         switch n.kind {
         case .local, .remote:
             if let ref = n.ref, !ref.isHead { actions?.checkout(ref) }
+        case .worktree:
+            if let wt = n.worktree, !samePath(wt.path, repository.root.path) { actions?.openWorktree(wt) }
         case .remoteGroup, .section:
             if outline.isItemExpanded(n) { outline.collapseItem(n) } else { outline.expandItem(n) }
         case .tag, .stash:
@@ -345,7 +417,7 @@ final class SidebarViewController: NSViewController, NSOutlineViewDataSource, NS
 
     func menuNeedsUpdate(_ menu: NSMenu) {
         menu.removeAllItems()
-        guard let n = outline.item(atRow: outline.clickedRow) as? SidebarNode else { return }
+        guard let n = outline.item(atRow: clickedRow) as? SidebarNode else { return }
         let current = repository.currentBranch ?? "HEAD"
         func add(_ title: String, _ action: Selector) {
             let item = menu.addItem(withTitle: title, action: action, keyEquivalent: "")
@@ -355,7 +427,13 @@ final class SidebarViewController: NSViewController, NSOutlineViewDataSource, NS
         switch n.kind {
         case .local:
             guard let ref = n.ref else { return }
-            if !ref.isHead { add("Checkout", #selector(menuCheckout(_:))) }
+            let elsewhere = repository.worktreeUsing(branch: ref.name)
+            if let elsewhere {
+                add("Open Worktree “\(elsewhere.name)”", #selector(menuOpenBranchWorktree(_:)))
+            } else if !ref.isHead {
+                add("Checkout", #selector(menuCheckout(_:)))
+                add("New Worktree for \(ref.name)…", #selector(menuNewWorktreeForBranch(_:)))
+            }
             if !ref.isHead {
                 add("Merge \(ref.name) into \(current)", #selector(menuMerge(_:)))
                 add("Rebase \(current) onto \(ref.name)", #selector(menuRebase(_:)))
@@ -382,6 +460,9 @@ final class SidebarViewController: NSViewController, NSOutlineViewDataSource, NS
             add("Rebase \(current) onto \(ref.name)", #selector(menuRebase(_:)))
             menu.addItem(.separator())
             add("New Branch from \(ref.name)…", #selector(menuNewBranch(_:)))
+            if repository.worktreeUsing(branch: ref.remoteBranch ?? "") == nil && ref.remoteBranch != repository.currentBranch {
+                add("New Worktree for \(ref.name)…", #selector(menuNewWorktreeForBranch(_:)))
+            }
             add("Delete \(ref.name) on Remote…", #selector(menuDeleteRemote(_:)))
             menu.addItem(.separator())
             add("Copy Name", #selector(menuCopyName(_:)))
@@ -394,10 +475,85 @@ final class SidebarViewController: NSViewController, NSOutlineViewDataSource, NS
             add("Pop", #selector(menuStashPop(_:)))
             menu.addItem(.separator())
             add("Drop…", #selector(menuStashDrop(_:)))
+        case .worktree:
+            guard let wt = n.worktree else { return }
+            let isCurrent = samePath(wt.path, repository.root.path)
+            if !isCurrent && !wt.isPrunable { add("Open in Tab", #selector(menuOpenWorktree(_:))) }
+            if !wt.isPrunable {
+                add("Show in Finder", #selector(menuRevealWorktree(_:)))
+                add("Open in Terminal", #selector(menuTerminalWorktree(_:)))
+            }
+            add("Copy Path", #selector(menuCopyWorktreePath(_:)))
+            if !wt.isMain {
+                menu.addItem(.separator())
+                if wt.isLocked { add("Unlock", #selector(menuUnlockWorktree(_:))) } else { add("Lock…", #selector(menuLockWorktree(_:))) }
+                if !wt.isPrunable { add("Move…", #selector(menuMoveWorktree(_:))) }
+                add(wt.isPrunable ? "Prune…" : "Remove…", #selector(menuRemoveWorktree(_:)))
+            }
+            menu.addItem(.separator())
+            add("New Worktree…", #selector(menuNewWorktree(_:)))
+            if repository.worktrees.contains(where: { $0.isPrunable && !$0.isLocked }) {
+                add("Prune Missing Worktrees…", #selector(menuPruneWorktrees(_:)))
+            }
+        case .section where n.title == "Worktrees" || n.title == "Branches":
+            add("New Worktree…", #selector(menuNewWorktree(_:)))
+            if n.title == "Worktrees", repository.worktrees.contains(where: { $0.isPrunable && !$0.isLocked }) {
+                add("Prune Missing Worktrees…", #selector(menuPruneWorktrees(_:)))
+            }
         case .remoteGroup, .section:
             break
         }
     }
+
+    // MARK: Worktree menu actions
+
+    @objc private func menuOpenBranchWorktree(_ item: NSMenuItem) {
+        if let name = node(item)?.ref?.name, let wt = repository.worktreeUsing(branch: name) { actions?.openWorktree(wt) }
+    }
+
+    @objc private func menuNewWorktreeForBranch(_ item: NSMenuItem) {
+        if let ref = node(item)?.ref { actions?.promptNewWorktree(branch: ref.name) }
+    }
+
+    @objc private func menuNewWorktree(_ item: NSMenuItem) { actions?.promptNewWorktree() }
+
+    @objc private func menuOpenWorktree(_ item: NSMenuItem) {
+        if let wt = node(item)?.worktree { actions?.openWorktree(wt) }
+    }
+
+    @objc private func menuRevealWorktree(_ item: NSMenuItem) {
+        if let wt = node(item)?.worktree { NSWorkspace.shared.activateFileViewerSelecting([wt.url]) }
+    }
+
+    @objc private func menuTerminalWorktree(_ item: NSMenuItem) {
+        guard let wt = node(item)?.worktree else { return }
+        let terminal = URL(fileURLWithPath: "/System/Applications/Utilities/Terminal.app")
+        NSWorkspace.shared.open([wt.url], withApplicationAt: terminal, configuration: NSWorkspace.OpenConfiguration())
+    }
+
+    @objc private func menuCopyWorktreePath(_ item: NSMenuItem) {
+        guard let wt = node(item)?.worktree else { return }
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(wt.path, forType: .string)
+    }
+
+    @objc private func menuLockWorktree(_ item: NSMenuItem) {
+        if let wt = node(item)?.worktree { actions?.promptLockWorktree(wt) }
+    }
+
+    @objc private func menuUnlockWorktree(_ item: NSMenuItem) {
+        if let wt = node(item)?.worktree { actions?.unlockWorktree(wt) }
+    }
+
+    @objc private func menuMoveWorktree(_ item: NSMenuItem) {
+        if let wt = node(item)?.worktree { actions?.promptMoveWorktree(wt) }
+    }
+
+    @objc private func menuRemoveWorktree(_ item: NSMenuItem) {
+        if let wt = node(item)?.worktree { actions?.confirmRemoveWorktree(wt) }
+    }
+
+    @objc private func menuPruneWorktrees(_ item: NSMenuItem) { actions?.confirmPruneWorktrees() }
 
     private func node(_ item: NSMenuItem) -> SidebarNode? { item.representedObject as? SidebarNode }
 

@@ -8,7 +8,7 @@ enum Prompt {
     nonisolated(unsafe) static var headlessLog: [String] = []
     nonisolated(unsafe) static var headlessAnswers: [Int] = []
 
-    private static func run(_ alert: NSAlert, _ window: NSWindow?) async -> NSApplication.ModalResponse {
+    static func run(_ alert: NSAlert, _ window: NSWindow?) async -> NSApplication.ModalResponse {
         // Headless tests run with the .prohibited activation policy: never block in a modal loop.
         if NSApp.activationPolicy() == .prohibited {
             headlessLog.append(alert.messageText + " — " + alert.informativeText)
@@ -25,7 +25,8 @@ enum Prompt {
 
     static func text(_ window: NSWindow?, title: String, message: String = "", value: String = "",
                      placeholder: String = "", ok: String = "OK",
-                     checkbox: String? = nil, checkboxOn: Bool = true) async -> (text: String, checked: Bool)? {
+                     checkbox: String? = nil, checkboxOn: Bool = true,
+                     allowEmpty: Bool = false) async -> (text: String, checked: Bool)? {
         let alert = NSAlert()
         alert.messageText = title
         alert.informativeText = message
@@ -51,7 +52,7 @@ enum Prompt {
         let response = await run(alert, window)
         guard response == .alertFirstButtonReturn else { return nil }
         let text = field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !text.isEmpty else { return nil }
+        guard !text.isEmpty || allowEmpty else { return nil }
         return (text, box?.state == .on)
     }
 

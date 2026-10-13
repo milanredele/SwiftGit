@@ -67,6 +67,11 @@ A lightweight, native macOS git client built with plain AppKit on top of the
 - Quiet fetch when a tab gets focus; pulls blocked by local changes offer
   "Stash and Pull". Settings (⌘,) for pull mode, auto-stash, fetching and
   the Claude model.
+- **Worktrees:** each worktree opens as its own tab ("repo › worktree"). The
+  sidebar lists them and marks branches checked out elsewhere; create a
+  worktree for any branch (or a new one), open, lock, move, remove (changes
+  are stashed first, the branch can go too) and prune missing ones. Opening a
+  bare repository offers its worktrees, or to create the first one.
 - Opens your configured `git difftool` / `git mergetool` when you want them.
 
 ## Requirements

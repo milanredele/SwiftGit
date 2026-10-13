@@ -1,7 +1,7 @@
 import AppKit
 
 @MainActor
-public final class AppDelegate: NSObject, NSApplicationDelegate {
+public final class AppDelegate: NSObject, NSApplicationDelegate, RepositoryTabHost {
     public override init() {
         defaults = .standard
         super.init()
@@ -101,6 +101,9 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         let repo: Repository
         do {
             repo = try await Repository.open(url)
+        } catch let bare as Repository.BareRepository {
+            await openBare(bare.commonDir)
+            return
         } catch {
             let alert = NSAlert()
             alert.messageText = "Can’t open repository"
@@ -108,11 +111,12 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
             alert.runModal()
             return
         }
-        if let existing = controllers.first(where: { $0.repository.root == repo.root }) {
-            existing.window?.makeKeyAndOrderFront(nil)
+        if let existing = controllers.first(where: { samePath($0.repository.root.path, repo.root.path) }) {
+            if select { existing.window?.makeKeyAndOrderFront(nil) }
             return
         }
         let controller = RepoWindowController(repository: repo)
+        controller.tabHost = self
         controller.onClose = { [weak self, weak controller] in
             guard let self, let controller else { return }
             self.controllers.removeAll { $0 === controller }
@@ -133,6 +137,67 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         repo.start()
         saveOpenRepositories()
+    }
+
+    func closeTab(root: URL) {
+        for c in controllers where samePath(c.repository.root.path, root.path) { c.window?.close() }
+    }
+
+    func isOpen(root: URL) -> Bool {
+        controllers.contains { samePath($0.repository.root.path, root.path) }
+    }
+
+    /// A bare repository has no files of its own: offers its worktrees, or to create one.
+    func openBare(_ commonDir: URL) async {
+        let name = WorktreeLocation.repositoryName(commonDir: commonDir)
+        let worktrees = await BareRepositoryWorktrees.worktrees(of: commonDir)
+        let existing = worktrees.filter { FileManager.default.fileExists(atPath: $0.path) }
+        let intro = "“\(name)” is a bare repository: it has no working files of its own. Its branches are checked out in worktrees — folders that share the repository."
+        if existing.count == 1 {
+            await open(existing[0].url, select: true)
+            return
+        }
+        if existing.isEmpty {
+            let choice = await Prompt.buttons(nil, title: "Open a worktree of “\(name)”",
+                                              message: intro + "\n\nIt has none yet. Create one to start working.",
+                                              buttons: ["New Worktree…", "Cancel"])
+            if choice == 0 { await newBareWorktree(commonDir, busy: Set(worktrees.compactMap(\.branch))) }
+            return
+        }
+        let list = existing.map { "• \($0.name)" + ($0.branch.map { " (\($0))" } ?? "") + " — \($0.path)" }.joined(separator: "\n")
+        let choice = await Prompt.buttons(nil, title: "Open worktrees of “\(name)”",
+                                          message: intro + "\n\n\(list)",
+                                          buttons: ["Open All (\(existing.count))", "Choose…", "New Worktree…", "Cancel"])
+        switch choice {
+        case 0:
+            for (i, wt) in existing.enumerated() { await open(wt.url, select: i == 0) }
+        case 1:
+            let labels = existing.map { $0.name + ($0.branch.map { " (\($0))" } ?? "") }
+            guard let picked = await Prompt.choose(nil, title: "Open a worktree of “\(name)”", options: labels, ok: "Open"),
+                  let i = labels.firstIndex(of: picked) else { return }
+            await open(existing[i].url, select: true)
+        case 2:
+            await newBareWorktree(commonDir, busy: Set(worktrees.compactMap(\.branch)))
+        default:
+            break
+        }
+    }
+
+    private func newBareWorktree(_ commonDir: URL, busy: Set<String>) async {
+        let branches = await BareRepositoryWorktrees.branches(of: commonDir)
+        let remoteSet = Set(branches.remote)
+        let locals = branches.local.filter { !busy.contains($0) }
+        let remotes = branches.remote.filter { !busy.contains(BareRepositoryWorktrees.localName($0, remoteBranches: remoteSet)) }
+        guard let r = await NewWorktreePrompt.run(nil, message: "Choose the branch to check out, or type a new branch name.",
+                                                  branches: locals + remotes, initial: nil,
+                                                  defaultPath: { BareRepositoryWorktrees.defaultFolder(commonDir, branch: BareRepositoryWorktrees.localName($0, remoteBranches: remoteSet)) })
+        else { return }
+        let result = await BareRepositoryWorktrees.addWorktree(commonDir, path: r.path, branch: r.branch)
+        guard result.ok else {
+            await Prompt.error(nil, title: "Add worktree failed", message: WorktreeProblem.explain(result.errorMessage) ?? result.errorMessage)
+            return
+        }
+        await open(r.path, select: true)
     }
 
     private func saveOpenRepositories() {
