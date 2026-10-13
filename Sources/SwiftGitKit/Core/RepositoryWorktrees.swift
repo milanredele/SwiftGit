@@ -21,10 +21,12 @@ struct WorktreeInfo: Hashable {
 
     /// Parses `git worktree list --porcelain -z`: NUL-separated attributes,
     /// an empty attribute ends each worktree.
+    /// Without -z (git before 2.36) attributes are separated by newlines.
     static func parse(_ data: Data) -> [WorktreeInfo] {
         var out: [WorktreeInfo] = []
         var current: WorktreeInfo?
-        for field in data.split(separator: 0, omittingEmptySubsequences: false) {
+        let separator: UInt8 = data.contains(0) ? 0 : 10
+        for field in data.split(separator: separator, omittingEmptySubsequences: false) {
             let s = String(decoding: field, as: UTF8.self)
             if s.isEmpty {
                 if let c = current { out.append(c) }
@@ -48,6 +50,22 @@ struct WorktreeInfo: Hashable {
         }
         if let c = current { out.append(c) }
         return out
+    }
+
+    /// `-z` needs git 2.36; older versions fall back to newline-separated output.
+    nonisolated(unsafe) private static var supportsZ = true
+
+    /// `git worktree list` run in `dir`; nil if it failed.
+    static func list(in dir: URL) async -> [WorktreeInfo]? {
+        let git = Git(root: dir)
+        if supportsZ {
+            let r = await git.run(["worktree", "list", "--porcelain", "-z"])
+            if r.ok { return parse(r.stdout) }
+            guard r.stderr.contains("unknown switch") else { return nil }
+            supportsZ = false
+        }
+        let r = await git.run(["worktree", "list", "--porcelain"])
+        return r.ok ? parse(r.stdout) : nil
     }
 }
 
@@ -92,7 +110,7 @@ enum WorktreeLocation {
 enum WorktreeProblem {
     /// The worktree path from "is already checked out at '…'" / "is already used by worktree at '…'".
     static func busyWorktreePath(_ message: String) -> String? {
-        for marker in ["is already checked out at '", "is already used by worktree at '"] {
+        for marker in ["is already checked out at '", "is already used by worktree at '", "used by worktree at '"] {
             guard let r = message.range(of: marker) else { continue }
             let rest = message[r.upperBound...]
             guard let end = rest.firstIndex(of: "'") else { continue }
@@ -132,7 +150,8 @@ extension Repository {
         if let remote = refs.first(where: { $0.kind == .remote && $0.name == text }), let local = remote.remoteBranch {
             return localBranch(named: local) != nil ? .existing(local) : .new(name: local, start: text, track: true)
         }
-        return .new(name: text, start: start ?? currentBranch ?? "HEAD", track: false)
+        // Not "HEAD": worktree commands run in the common git dir, where HEAD is the main worktree's.
+        return .new(name: text, start: start ?? currentBranch ?? headHash?.hex ?? "HEAD", track: false)
     }
 
     /// The local branch name a new worktree for `text` would have.
@@ -145,8 +164,15 @@ extension Repository {
     }
 
     func defaultWorktreePath(for branch: String) -> URL {
-        let main = worktrees.first.flatMap { $0.isMain && !$0.isBare ? $0.url : nil }
-            ?? (isLinkedWorktree ? nil : root)
+        let main: URL?
+        if let first = worktrees.first {
+            main = first.isBare ? nil : first.url
+        } else if !isLinkedWorktree {
+            main = root
+        } else {
+            // Not listed yet: a ".git" common dir belongs to a normal main worktree.
+            main = commonDir.lastPathComponent == ".git" ? commonDir.deletingLastPathComponent() : nil
+        }
         return WorktreeLocation.folder(for: branch, commonDir: commonDir, mainWorktree: main, repositoryName: repositoryName)
     }
 
@@ -179,13 +205,45 @@ extension Repository {
         var changedFiles: [String] = []
         /// Commits on its branch that are on no remote branch and no other local branch.
         var unpushedCommits = 0
+        /// Detached: commits at its HEAD that are on no branch (lost when it is removed).
+        var detachedCommits = 0
+        /// A merge, rebase, cherry-pick or revert in progress.
+        var operation: String?
         var missing = false
+        /// The folder exists but isn't that worktree (e.g. its .git file is gone).
+        var invalid = false
+    }
+
+    /// True if git, run in `wt`'s folder, really finds that worktree (and not
+    /// e.g. an enclosing repository).
+    func isIntact(_ wt: WorktreeInfo) async -> Bool {
+        let r = await Git(root: wt.url).run(["rev-parse", "--show-toplevel"])
+        guard r.ok else { return false }
+        let top = r.output.trimmingCharacters(in: .newlines)
+        return samePath(top, wt.path) || samePath(top, URL(fileURLWithPath: wt.path).resolvingSymlinksInPath().path)
     }
 
     func worktreeState(_ wt: WorktreeInfo) async -> WorktreeState {
         var s = WorktreeState()
         guard FileManager.default.fileExists(atPath: wt.path) else { s.missing = true; return s }
-        let status = await Git(root: wt.url).run(["status", "--porcelain", "-z", "--untracked-files=all"])
+        guard await isIntact(wt) else { s.invalid = true; return s }
+        let wgit = Git(root: wt.url)
+        let gitDirResult = await wgit.run(["rev-parse", "--absolute-git-dir"])
+        if gitDirResult.ok {
+            let gd = gitDirResult.output.trimmingCharacters(in: .newlines)
+            let fm = FileManager.default
+            for (file, what) in [("rebase-merge", "a rebase"), ("rebase-apply", "a rebase"), ("MERGE_HEAD", "a merge"),
+                                 ("CHERRY_PICK_HEAD", "a cherry-pick"), ("REVERT_HEAD", "a revert")]
+            where fm.fileExists(atPath: gd + "/" + file) {
+                s.operation = what
+                break
+            }
+        }
+        if wt.branch == nil {
+            let r = await wgit.run(["rev-list", "--count", "HEAD", "--not", "--branches", "--remotes", "--tags"])
+            s.detachedCommits = Int(r.output.trimmingCharacters(in: .whitespacesAndNewlines)) ?? 0
+        }
+        let status = await wgit.run(["status", "--porcelain", "-z", "--untracked-files=all"])
         var entries = status.stdout.split(separator: 0).map { String(decoding: $0, as: UTF8.self) }
         // Renames are followed by their old path as a separate entry.
         var files: [String] = []
@@ -207,23 +265,33 @@ extension Repository {
     /// Stashes a worktree's changes, including untracked files. Stashes are
     /// shared by all worktrees, so they survive removing it.
     func stashChanges(in wt: WorktreeInfo, message: String) async -> Bool {
+        guard await isIntact(wt) else { return false }
         let r = await perform("Stash changes of \(wt.name)", ["stash", "push", "--include-untracked", "-m", message], in: wt.url)
         return r.ok
     }
 
     /// Removes a worktree (its folder and git's record of it). `force` also
-    /// removes one with changes, or a locked one. A worktree whose folder is
-    /// already gone is pruned instead.
+    /// discards uncommitted changes. A lock is lifted first (and restored if
+    /// removing fails), so it never turns into discarding changes. A worktree
+    /// whose folder is already gone is pruned instead.
     @discardableResult
     func removeWorktree(_ wt: WorktreeInfo, force: Bool) async -> Bool {
+        if wt.isLocked {
+            guard await perform("Unlock worktree", ["worktree", "unlock", wt.path], in: commonDir).ok else { return false }
+        }
+        let ok: Bool
         if !FileManager.default.fileExists(atPath: wt.path) {
-            if wt.isLocked { await perform("Unlock worktree", ["worktree", "unlock", wt.path], in: commonDir) }
             await perform("Prune worktrees", ["worktree", "prune"], in: commonDir)
             await refreshRefs()
-            return !worktrees.contains { samePath($0.path, wt.path) }
+            ok = !worktrees.contains { samePath($0.path, wt.path) }
+        } else {
+            ok = await perform("Remove worktree", ["worktree", "remove"] + (force ? ["--force"] : []) + [wt.path], in: commonDir).ok
         }
-        let forceArgs = force ? (wt.isLocked ? ["--force", "--force"] : ["--force"]) : []
-        return await perform("Remove worktree", ["worktree", "remove"] + forceArgs + [wt.path], in: commonDir).ok
+        if !ok && wt.isLocked {
+            await perform("Lock worktree", ["worktree", "lock"] + (wt.lockReason.map { ["--reason", $0] } ?? []) + [wt.path],
+                          reportErrors: false, in: commonDir)
+        }
+        return ok
     }
 
     @discardableResult
@@ -253,8 +321,7 @@ extension Repository {
 /// Worktrees of a bare repository (which can't be opened as a tab itself).
 enum BareRepositoryWorktrees {
     static func worktrees(of commonDir: URL) async -> [WorktreeInfo] {
-        let r = await Git(root: commonDir).run(["worktree", "list", "--porcelain", "-z"])
-        return WorktreeInfo.parse(r.stdout).filter { !$0.isBare }
+        (await WorktreeInfo.list(in: commonDir) ?? []).filter { !$0.isBare }
     }
 
     /// Local branches, most recently committed first, and remote branches.
@@ -283,6 +350,9 @@ enum BareRepositoryWorktrees {
         if !isLocal, await git.run(["show-ref", "--verify", "--quiet", "refs/remotes/\(branch)"]).ok,
            let slash = branch.firstIndex(of: "/") {
             let local = String(branch[branch.index(after: slash)...])
+            if await git.run(["show-ref", "--verify", "--quiet", "refs/heads/\(local)"]).ok {
+                return await git.run(["worktree", "add", path.path, local])
+            }
             return await git.run(["worktree", "add", "--track", "-b", local, path.path, branch])
         }
         if isLocal { return await git.run(["worktree", "add", path.path, branch]) }

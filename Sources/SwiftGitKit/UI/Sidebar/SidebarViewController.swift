@@ -487,7 +487,7 @@ final class SidebarViewController: NSViewController, NSOutlineViewDataSource, NS
             if !wt.isMain {
                 menu.addItem(.separator())
                 if wt.isLocked { add("Unlock", #selector(menuUnlockWorktree(_:))) } else { add("Lock…", #selector(menuLockWorktree(_:))) }
-                if !wt.isPrunable { add("Move…", #selector(menuMoveWorktree(_:))) }
+                if !wt.isPrunable && !wt.isLocked { add("Move…", #selector(menuMoveWorktree(_:))) }
                 add(wt.isPrunable ? "Prune…" : "Remove…", #selector(menuRemoveWorktree(_:)))
             }
             menu.addItem(.separator())

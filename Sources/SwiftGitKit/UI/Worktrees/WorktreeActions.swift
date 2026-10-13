@@ -16,10 +16,16 @@ extension RepoWindowController {
         Task {
             guard !wt.isBare else { return }
             if !FileManager.default.fileExists(atPath: wt.path) {
+                if wt.isLocked {
+                    // Locked: probably on a drive that isn't connected. Never prune it from here.
+                    await Prompt.error(window, title: "“\(wt.name)” is unavailable",
+                                       message: "\(wt.path) can’t be found. The worktree is locked\(wt.lockReason.map { " (\($0))" } ?? ""), so git keeps it — connect the drive it is on and try again.")
+                    return
+                }
                 let prune = await Prompt.confirm(window, title: "“\(wt.name)” no longer exists",
-                                                 message: "The folder \(wt.path) was moved or deleted outside SwiftGit. Pruning removes git’s record of it; its branch\(wt.branch.map { " \($0)" } ?? "") is kept.",
+                                                 message: "The folder \(wt.path) was moved or deleted outside SwiftGit. Pruning removes git’s record of it, and of any other worktree whose folder is gone (except locked ones). Branches are kept.",
                                                  ok: "Prune")
-                if prune { await repository.removeWorktree(wt, force: false) }
+                if prune { await repository.pruneWorktrees() }
                 return
             }
             await tabHost?.open(wt.url, select: true)
@@ -44,7 +50,7 @@ extension RepoWindowController {
             let busy = Set(repository.worktrees.compactMap(\.branch))
             let locals = repository.localBranches.map(\.name).filter { !busy.contains($0) }
             let remotes = repository.remoteBranches.filter { r in !busy.contains(r.remoteBranch ?? "") }.map(\.name)
-            let start = repository.currentBranch ?? "HEAD"
+            let start = repository.currentBranch ?? repository.headHash.map { String($0.hex.prefix(8)) } ?? "HEAD"
             let message = "Check out a branch in a separate folder, to work on it alongside \(repository.currentBranch ?? "this worktree"). A name that isn’t a branch yet creates a new branch from \(start)."
             let repo = repository
             guard let r = await NewWorktreePrompt.run(window, message: message, branches: locals + remotes,
@@ -57,9 +63,15 @@ extension RepoWindowController {
 
     func addWorktree(_ r: NewWorktreePrompt.Result) async {
         let what = repository.worktreeBranch(for: r.branch, start: nil)
-        if case .existing(let b) = what, let other = repository.worktrees.first(where: { $0.branch == b }) {
-            await offerOpenWorktree(other, branch: b)
-            return
+        if case .existing(let b) = what {
+            if b == repository.currentBranch && repository.currentWorktree?.branch == b {
+                showError("Add worktree", "\(b) is checked out in this worktree. Git lets a branch be checked out in only one worktree at a time — pick another branch, or type a new branch name.")
+                return
+            }
+            if let other = repository.worktreeUsing(branch: b) {
+                await offerOpenWorktree(other, branch: b)
+                return
+            }
         }
         if FileManager.default.fileExists(atPath: r.path.path),
            let items = try? FileManager.default.contentsOfDirectory(atPath: r.path.path), !items.isEmpty {
@@ -79,7 +91,20 @@ extension RepoWindowController {
         }
         Task {
             let state = await repository.worktreeState(wt)
+            let isSelf = samePath(wt.path, repository.root.path)
+            if state.invalid {
+                showError("Remove worktree", "\(wt.path) doesn’t look like that worktree any more (its .git file may be missing). Check the folder in the Finder; if it is no longer needed, delete it there and prune.")
+                return
+            }
             var lines = [wt.path, ""]
+            var losing = 0
+            if let op = state.operation {
+                lines.append("⚠︎ It is in the middle of \(op); that is abandoned.")
+            }
+            if state.detachedCommits > 0 {
+                losing = state.detachedCommits
+                lines.append("⚠︎ It is detached and has \(Self.commits(losing)) on no branch. They will be lost — create a branch for them first to keep them.")
+            }
             if state.missing {
                 lines.append("Its folder no longer exists. This removes git’s record of it (and of any other worktree whose folder is gone).")
             } else {
@@ -91,16 +116,17 @@ extension RepoWindowController {
                     if n > 5 { list += "\n   … and \(n - 5) more" }
                     lines.append("⚠︎ \(n) changed file\(n == 1 ? "" : "s"):\n\(list)\nThey are saved as a stash first; stashes are shared by all worktrees, so you can apply it anywhere later.")
                 }
-                lines.append("The folder is deleted, including ignored files such as build output.")
+                lines.append("The folder is deleted, including ignored files such as build output, and so are its recoverable discarded changes.")
             }
-            if wt.isLocked { lines.append("🔒 It is locked" + (wt.lockReason.map { ": \($0)" } ?? "") + ".") }
+            if wt.isLocked { lines.append("🔒 It is locked" + (wt.lockReason.map { ": \($0)" } ?? "") + "; removing it lifts the lock.") }
             var option: String?
             var optionOn = false
             if let b = wt.branch {
                 let ref = repository.localBranch(named: b)
                 if state.unpushedCommits > 0 {
                     lines.append("⚠︎ \(b) has \(Self.commits(state.unpushedCommits)) that \(state.unpushedCommits == 1 ? "is" : "are") on no remote and no other branch. Keep the branch to keep them.")
-                    option = "Also delete the branch \(b) (its commits would only be reachable through Undo)"
+                    // From its own tab there is no Undo afterwards (the tab closes).
+                    option = isSelf ? nil : "Also delete the branch \(b) (its commits would only be reachable through Undo)"
                 } else {
                     lines.append("✓ The branch \(b) is kept unless you delete it; all its commits are also on a remote or another branch.")
                     option = "Also delete the branch \(b)"
@@ -109,7 +135,8 @@ extension RepoWindowController {
             }
             guard let deleteBranch = await Prompt.confirm(window, title: "Remove worktree “\(wt.name)”?",
                                                           message: lines.joined(separator: "\n"),
-                                                          ok: "Remove Worktree", destructive: false,
+                                                          ok: losing > 0 ? "Remove and Lose \(Self.commits(losing))" : "Remove Worktree",
+                                                          destructive: losing > 0,
                                                           option: option, optionOn: optionOn) else { return }
             await removeWorktree(wt, state: state, deleteBranch: deleteBranch)
         }
@@ -121,8 +148,9 @@ extension RepoWindowController {
         if !state.changedFiles.isEmpty {
             guard await repository.stashChanges(in: wt, message: "SwiftGit: changes from worktree \(wt.name)") else { return }
         }
+        // Changes were stashed, so no force: if anything new appeared meanwhile, git refuses.
+        guard await repository.removeWorktree(wt, force: false) else { return }
         if !isSelf { tabHost?.closeTab(root: wt.url) }
-        guard await repository.removeWorktree(wt, force: wt.isLocked) else { return }
         if deleteBranch, let b = wt.branch {
             if isSelf {
                 await repository.perform("Delete \(b)", ["branch", "-D", b], in: repository.commonDir)
@@ -157,6 +185,10 @@ extension RepoWindowController {
     func promptMoveWorktree(_ wt: WorktreeInfo) {
         guard !wt.isMain else {
             showError("Move worktree", "“\(wt.name)” is the main worktree; move it in the Finder instead (and reopen it).")
+            return
+        }
+        guard !wt.isLocked else {
+            showError("Move worktree", "“\(wt.name)” is locked. Unlock it first.")
             return
         }
         Task {

@@ -69,6 +69,8 @@ final class Repository {
     private static var sharedFetches: [String: (last: Date, task: Task<Void, Never>?)] = [:]
     private var backgroundFetchTask: Task<Void, Never>? { Repository.sharedFetches[commonDir.path]?.task }
     private var lastBackgroundFetch: Date { Repository.sharedFetches[commonDir.path]?.last ?? .distantPast }
+    /// Running operations per repository (all worktree tabs), keyed by common dir.
+    private static var activeOperations: [String: Int] = [:]
     /// Roots of other worktrees inside this one's folder (their file events are ignored).
     var otherWorktreeRoots: [String] = []
     /// All worktrees of the repository (`git worktree list`), main first.
@@ -142,6 +144,11 @@ final class Repository {
         if lines[0] == "true" { throw BareRepository(commonDir: commonDir) }
         let top = await ProcessRunner.run(executable: Git.executable, arguments: ["rev-parse", "--show-toplevel"], cwd: url)
         let toplevel = top.output.trimmingCharacters(in: .newlines)
+        if !(top.ok && !toplevel.isEmpty), commonDir.lastPathComponent == ".git",
+           !samePath(url.resolvingSymlinksInPath().path, commonDir.deletingLastPathComponent().path) {
+            // Inside the .git folder of a normal repository: open the repository.
+            return try await open(commonDir.deletingLastPathComponent())
+        }
         guard top.ok, !toplevel.isEmpty else {
             // Inside .git of a repository, or a bare repository's own folder.
             throw BareRepository(commonDir: commonDir)
@@ -277,16 +284,20 @@ final class Repository {
         async let refsResult = git.run(["for-each-ref", "--format=" + RefInfo.format, "refs/heads", "refs/remotes", "refs/tags"])
         async let stashResult = git.run(["stash", "list", "--format=%gd%x09%H%x09%s"])
         async let remoteResult = git.run(["remote", "-v"])
-        async let worktreeResult = git.run(["worktree", "list", "--porcelain", "-z"])
+        async let worktreeResult = WorktreeInfo.list(in: root)
         let (r1, r2, r3, r4) = await (refsResult, stashResult, remoteResult, worktreeResult)
         guard gen == refsGeneration else { return }
         var newRefs = r1.ok ? RefInfo.parse(r1.output) : []
         stashes = r2.ok ? StashInfo.parse(r2.output) : []
         remotes = r3.ok ? RemoteInfo.parse(r3.output) : []
-        if r4.ok {
-            worktrees = WorktreeInfo.parse(r4.stdout)
+        if let r4 {
+            worktrees = r4
+            // Same form as the event paths in handleFileEvents (without /private
+            // unless our own paths have it).
+            let strip = !root.path.hasPrefix("/private/")
             let prefix = root.path + "/"
-            otherWorktreeRoots = worktrees.map(\.path).filter { $0.hasPrefix(prefix) || $0.hasPrefix("/private" + prefix) }.map { $0 + "/" }
+            otherWorktreeRoots = worktrees.map { strip && $0.path.hasPrefix("/private/") ? String($0.path.dropFirst(8)) : $0.path }
+                .filter { $0.hasPrefix(prefix) }.map { $0 + "/" }
         }
 
         // Which local branches are already merged into the main branch?
@@ -680,6 +691,7 @@ final class Repository {
         let token = CancelToken()
         activityToken = token
         activityTitle = title
+        Repository.activeOperations[commonDir.path, default: 0] += 1
         activityDetail = ""
         notify(.activity)
         let runner = directory.map { Git(root: $0) } ?? git
@@ -688,6 +700,7 @@ final class Repository {
         })
         activityToken = nil
         activityTitle = nil
+        Repository.activeOperations[commonDir.path, default: 1] -= 1
         notify(.activity)
         let stateBefore = opState, headBefore = status.headOID
         await refreshStatus()
@@ -879,7 +892,9 @@ final class Repository {
     /// Fetches all remotes quietly (no activity bar, no error dialogs), at most
     /// once per `minInterval`. Used when the tab gets focus.
     func fetchInBackground(minInterval: TimeInterval = Settings.focusFetchInterval) {
+        // Not while any tab of this repository runs an operation (git's ref locks).
         guard !remotes.isEmpty, backgroundFetchTask == nil, !isBusy, opState == .none,
+              Repository.activeOperations[commonDir.path, default: 0] == 0,
               Date().timeIntervalSince(lastBackgroundFetch) >= minInterval else { return }
         let key = commonDir.path
         let task = Task {

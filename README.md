@@ -77,7 +77,7 @@ A lightweight, native macOS git client built with plain AppKit on top of the
 ## Requirements
 
 - macOS 14 Sonoma or later (Apple Silicon or Intel)
-- `git` (Xcode Command Line Tools or Homebrew)
+- `git` 2.31 or later (Xcode Command Line Tools or Homebrew)
 - [`gh`](https://cli.github.com) logged in (`gh auth login`) for pull requests
 
 ## Install

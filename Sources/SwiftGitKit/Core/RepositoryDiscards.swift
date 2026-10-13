@@ -114,15 +114,17 @@ extension Repository {
     /// Moves snapshots from the old shared ref into this worktree's own (once,
     /// in the main worktree, where they were taken). Dates restart at the move.
     func migrateLegacyDiscards() async {
-        guard !isLinkedWorktree,
-              await git.run(["rev-parse", "-q", "--verify", Repository.legacyDiscardRef]).ok else { return }
+        // Whichever worktree opens first takes them (a bare repository has no main worktree).
+        guard await git.run(["rev-parse", "-q", "--verify", Repository.legacyDiscardRef]).ok else { return }
         let r = await git.run(["reflog", "show", "--format=%H%x1f%gs", Repository.legacyDiscardRef, "--"])
+        guard r.ok else { return }
         let entries = r.output.split(separator: "\n").compactMap { line -> (String, String)? in
             let f = line.split(separator: "\u{1f}", maxSplits: 1, omittingEmptySubsequences: false)
             return f.count == 2 ? (String(f[0]), String(f[1])) : nil
         }
         for (sha, message) in entries.reversed() {
-            _ = await git.run(["update-ref", "--create-reflog", "-m", message, Repository.discardRef, sha])
+            // Keep the old ref unless every entry was copied.
+            guard await git.run(["update-ref", "--create-reflog", "-m", message, Repository.discardRef, sha]).ok else { return }
         }
         _ = await git.run(["update-ref", "-d", Repository.legacyDiscardRef])
     }

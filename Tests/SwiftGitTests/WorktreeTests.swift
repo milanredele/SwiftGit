@@ -79,16 +79,16 @@ struct WorktreeTests {
         #expect(la.count == 1 && lb.count == 1)
         #expect(la.first?.sha != lb.first?.sha)
 
-        // Snapshots in the old shared ref move to the main worktree's own.
+        // Snapshots in the old shared ref move to the own ref of the worktree
+        // opened first (a bare repository has no main worktree).
         // (any commit will do; it must differ from the current snapshot or git logs nothing)
         let sha = try Fixture.git(["rev-parse", "HEAD"], in: main).trimmingCharacters(in: .whitespacesAndNewlines)
         try Fixture.git(["update-ref", "--create-reflog", "-m", "Discard old.txt", Repository.legacyDiscardRef, sha], in: main)
-        await b.migrateLegacyDiscards()   // linked worktrees leave it alone
-        #expect((try? Fixture.git(["rev-parse", "-q", "--verify", Repository.legacyDiscardRef], in: main)) != nil)
-        await a.migrateLegacyDiscards()
+        await b.migrateLegacyDiscards()
         #expect((try? Fixture.git(["rev-parse", "-q", "--verify", Repository.legacyDiscardRef], in: main)) == nil)
-        #expect(await a.discardedChanges().map(\.summary) == ["Discard old.txt", "Discard a.txt"])
-        #expect(await b.discardedChanges().count == 1)
+        await a.migrateLegacyDiscards()   // nothing left
+        #expect(await b.discardedChanges().map(\.summary) == ["Discard old.txt", "Discard a.txt"])
+        #expect(await a.discardedChanges().count == 1)
     }
 
     @Test func backgroundFetchIsSharedBetweenWorktrees() async throws {
@@ -249,5 +249,49 @@ struct WorktreeTests {
         let dotGit = main.deletingLastPathComponent().appendingPathComponent("plain.git")
         #expect(BareRepositoryWorktrees.defaultFolder(dotGit, branch: "a/b").path
                 == main.deletingLastPathComponent().appendingPathComponent("plain.worktrees/a-b").path)
+    }
+
+    // MARK: Review fixes
+
+    @Test func reviewEdgeCases() async throws {
+        // Output without -z (git < 2.36).
+        let plain = WorktreeInfo.parse(Data("worktree /r/a b\nHEAD 1\nbranch refs/heads/main\n\nworktree /r/c\nHEAD 2\ndetached\n\n".utf8))
+        #expect(plain.map(\.path) == ["/r/a b", "/r/c"] && plain[1].isDetached)
+        #expect(WorktreeProblem.busyWorktreePath("error: cannot delete branch 'x' used by worktree at '/r/wt'") == "/r/wt")
+
+        let (main, linked) = try WorktreeFixture.make()
+        // Before the first refresh a linked tab still proposes folders next to the main worktree.
+        let early = try await Repository.open(linked)
+        #expect(early.defaultWorktreePath(for: "x").deletingLastPathComponent().lastPathComponent == main.lastPathComponent + ".worktrees")
+        // Opening the .git folder opens the repository.
+        #expect(try await Repository.open(main.appendingPathComponent(".git")).root.path == main.path)
+
+        let repo = try await Repository.open(main)
+        await repo.refreshAll()
+
+        // A detached worktree with a commit of its own: removing it would lose that commit.
+        let detached = main.deletingLastPathComponent().appendingPathComponent(main.lastPathComponent + "-det")
+        #expect(await repo.addWorktree(at: detached, .detached("main")).ok)
+        try Fixture.write(detached, "d.txt", "d\n")
+        try Fixture.git(["add", "d.txt"], in: detached)
+        try Fixture.git(["commit", "-q", "-m", "detached work"], in: detached)
+        let det = try #require(repo.worktrees.first { $0.isDetached })
+        #expect(await repo.worktreeState(det).detachedCommits == 1)
+
+        // A locked worktree with changes isn't force-removed: removal fails and it stays locked.
+        var wt = try #require(repo.worktreeUsing(branch: "wt-branch"))
+        #expect(await repo.lockWorktree(wt, reason: "usb"))
+        wt = try #require(repo.worktreeUsing(branch: "wt-branch"))
+        try Fixture.write(linked, "a.txt", "unsaved\n")
+        #expect(await !repo.removeWorktree(wt, force: false))
+        #expect(FileManager.default.fileExists(atPath: linked.appendingPathComponent("a.txt").path))
+        await repo.refreshRefs()
+        #expect(repo.worktreeUsing(branch: "wt-branch")?.isLocked == true)
+        #expect(repo.worktreeUsing(branch: "wt-branch")?.lockReason == "usb")
+
+        // A folder that isn't the worktree any more is detected (and never stashed).
+        try FileManager.default.removeItem(at: detached.appendingPathComponent(".git"))
+        #expect(await repo.worktreeState(det).invalid)
+        #expect(await !repo.stashChanges(in: det, message: "x"))
     }
 }
