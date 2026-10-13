@@ -15,7 +15,11 @@ struct DiscardedChanges: Equatable {
 /// than `discardKeepDays` are expired when the repository is opened; once
 /// nothing refers to them, git's normal garbage collection removes the data.
 extension Repository {
-    static let discardRef = "refs/swiftgit/discarded"
+    /// Per-worktree ref (refs/worktree/… is private to each worktree), so
+    /// snapshots never mix between worktrees of one repository.
+    static let discardRef = "refs/worktree/swiftgit/discarded"
+    /// Where snapshots were kept before worktree support (shared by all worktrees).
+    static let legacyDiscardRef = "refs/swiftgit/discarded"
     static let discardKeepDays = 14
 
     /// Saves the current working-tree content of `paths` (nil: every changed
@@ -107,6 +111,22 @@ extension Repository {
     }
 
     /// Drops snapshots older than `discardKeepDays` (and the ref once empty).
+    /// Moves snapshots from the old shared ref into this worktree's own (once,
+    /// in the main worktree, where they were taken). Dates restart at the move.
+    func migrateLegacyDiscards() async {
+        guard !isLinkedWorktree,
+              await git.run(["rev-parse", "-q", "--verify", Repository.legacyDiscardRef]).ok else { return }
+        let r = await git.run(["reflog", "show", "--format=%H%x1f%gs", Repository.legacyDiscardRef, "--"])
+        let entries = r.output.split(separator: "\n").compactMap { line -> (String, String)? in
+            let f = line.split(separator: "\u{1f}", maxSplits: 1, omittingEmptySubsequences: false)
+            return f.count == 2 ? (String(f[0]), String(f[1])) : nil
+        }
+        for (sha, message) in entries.reversed() {
+            _ = await git.run(["update-ref", "--create-reflog", "-m", message, Repository.discardRef, sha])
+        }
+        _ = await git.run(["update-ref", "-d", Repository.legacyDiscardRef])
+    }
+
     func expireDiscarded(now: Date = Date()) async {
         guard await git.run(["rev-parse", "-q", "--verify", Repository.discardRef]).ok else { return }
         let cutoff = now.addingTimeInterval(-Double(Repository.discardKeepDays) * 86_400)

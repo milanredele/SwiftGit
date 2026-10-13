@@ -35,7 +35,7 @@ final class RepoWindowController: NSWindowController, NSWindowDelegate, NSToolba
                               backing: .buffered, defer: true)
         window.tabbingMode = .preferred
         window.tabbingIdentifier = "SwiftGitRepository"
-        window.title = repository.name
+        window.title = repository.displayName
         window.representedURL = repository.root
         window.minSize = NSSize(width: 820, height: 480)
         window.toolbarStyle = .unified

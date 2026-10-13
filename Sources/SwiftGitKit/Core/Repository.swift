@@ -64,9 +64,13 @@ final class Repository {
     /// Undo history of operations done in this tab (see RepositoryUndo.swift).
     var undoStack: [UndoEntry] = []
     var pendingUndo: UndoEntry?
-    /// Quiet fetch started when the tab gets focus (user operations wait for it).
-    private var backgroundFetchTask: Task<Void, Never>?
-    private var lastBackgroundFetch = Date.distantPast
+    /// Quiet fetches, shared by all tabs (worktrees) of one repository: keyed by
+    /// the common git directory. User operations wait for a running one.
+    private static var sharedFetches: [String: (last: Date, task: Task<Void, Never>?)] = [:]
+    private var backgroundFetchTask: Task<Void, Never>? { Repository.sharedFetches[commonDir.path]?.task }
+    private var lastBackgroundFetch: Date { Repository.sharedFetches[commonDir.path]?.last ?? .distantPast }
+    /// Roots of other worktrees inside this one's folder (their file events are ignored).
+    var otherWorktreeRoots: [String] = []
     private(set) var lastBackgroundFetchError: String?
     /// Open pull requests by head branch name (GitHub remotes only).
     private(set) var pullRequests: [String: PullRequestBadge] = [:]
@@ -92,30 +96,69 @@ final class Repository {
     var currentBranch: String? { status.branch }
     var isBusy: Bool { activityTitle != nil }
 
-    private init(root: URL, gitDir: URL) {
+    /// The repository's shared git directory: equal to `gitDir` for the main
+    /// worktree, the main `.git` for linked worktrees (where branches live).
+    let commonDir: URL
+
+    private init(root: URL, gitDir: URL, commonDir: URL) {
         self.root = root
         self.gitDir = gitDir
+        self.commonDir = commonDir
         self.git = Git(root: root)
+    }
+
+    /// True for a worktree added with `git worktree add` (not the main one).
+    var isLinkedWorktree: Bool { gitDir.path != commonDir.path }
+
+    /// Name of the repository (the main worktree's folder, or the bare repo's name).
+    var repositoryName: String {
+        let parent = commonDir.lastPathComponent == ".git" ? commonDir.deletingLastPathComponent() : commonDir
+        let n = parent.lastPathComponent
+        return n.hasSuffix(".git") ? String(n.dropLast(4)) : n
+    }
+
+    /// Tab title: the folder name, or "repo › worktree" for linked worktrees.
+    var displayName: String {
+        isLinkedWorktree ? "\(repositoryName) › \(root.lastPathComponent)" : name
+    }
+
+    /// Thrown when the folder is a bare repository (no working copy of its own).
+    struct BareRepository: Error {
+        let commonDir: URL
     }
 
     /// Validates that `url` is inside a git work tree and opens its top level.
     static func open(_ url: URL) async throws -> Repository {
         let r = await ProcessRunner.run(executable: Git.executable,
-                                        arguments: ["rev-parse", "--show-toplevel", "--absolute-git-dir"],
+                                        arguments: ["rev-parse", "--path-format=absolute", "--is-bare-repository",
+                                                    "--absolute-git-dir", "--git-common-dir"],
                                         cwd: url)
         let lines = r.output.split(separator: "\n").map(String.init)
-        guard r.ok, lines.count >= 2 else {
+        guard r.ok, lines.count >= 3 else {
             throw GitHubError(message: "“\(url.lastPathComponent)” is not a git repository.\n\n\(r.errorMessage)")
         }
-        let root = URL(fileURLWithPath: lines[0]).resolvingSymlinksInPath()
+        let commonDir = URL(fileURLWithPath: lines[2]).resolvingSymlinksInPath()
+        if lines[0] == "true" { throw BareRepository(commonDir: commonDir) }
+        let top = await ProcessRunner.run(executable: Git.executable, arguments: ["rev-parse", "--show-toplevel"], cwd: url)
+        let toplevel = top.output.trimmingCharacters(in: .newlines)
+        guard top.ok, !toplevel.isEmpty else {
+            // Inside .git of a repository, or a bare repository's own folder.
+            throw BareRepository(commonDir: commonDir)
+        }
+        let root = URL(fileURLWithPath: toplevel).resolvingSymlinksInPath()
         let gitDir = URL(fileURLWithPath: lines[1]).resolvingSymlinksInPath()
-        return Repository(root: root, gitDir: gitDir)
+        return Repository(root: root, gitDir: gitDir, commonDir: commonDir)
     }
 
     func start() {
-        Task { await expireDiscarded() }
+        Task {
+            await migrateLegacyDiscards()
+            await expireDiscarded()
+        }
         var paths = [root.path]
         if !gitDir.path.hasPrefix(root.path + "/") { paths.append(gitDir.path) }
+        // Branches and tags of a linked worktree live in the main repository's .git.
+        if isLinkedWorktree && !commonDir.path.hasPrefix(root.path + "/") { paths.append(commonDir.path) }
         watcher = RepoWatcher(paths: paths) { [weak self] events in
             self?.handleFileEvents(events)
         }
@@ -149,19 +192,54 @@ final class Repository {
 
     // MARK: Refresh
 
+    /// What a change inside a git directory means for this tab.
+    enum GitDirChange: Equatable { case ignore, status, refs }
+
+    /// Classifies a path relative to a git directory (`own`: this worktree's,
+    /// otherwise the shared one of a linked worktree).
+    static func classify(_ rel: Substring, own: Bool) -> GitDirChange {
+        let r = rel.hasPrefix("/") ? rel.dropFirst() : rel
+        if r.isEmpty { return own ? .status : .ignore }
+        for prefix in ["objects", "logs", "lfs", "hooks", "modules"] where r == prefix || r.hasPrefix(prefix + "/") {
+            return .ignore
+        }
+        // Other worktrees' private state: only their HEAD (branch badges) and
+        // adding/removing/locking worktrees matter.
+        if r.hasPrefix("worktrees") {
+            let parts = r.split(separator: "/")
+            if parts.count <= 2 { return .refs }
+            return parts.count == 3 && (parts[2] == "HEAD" || parts[2] == "locked" || parts[2] == "gitdir") ? .refs : .ignore
+        }
+        if r == "refs" || r.hasPrefix("refs/") || r.hasPrefix("packed-refs") || r == "config" || r == "FETCH_HEAD" { return .refs }
+        if !own {
+            // The main worktree's HEAD decides which branch it has checked out.
+            return r == "HEAD" ? .refs : .ignore
+        }
+        // Index writes (e.g. an IDE running git status) only affect status.
+        if r.hasPrefix("index") { return .status }
+        return .refs   // HEAD, MERGE_HEAD, rebase-merge/…, ORIG_HEAD: state and refs
+    }
+
     private func handleFileEvents(_ paths: [String]) {
-        let gd = gitDir.path
-        for p in paths {
-            guard p.hasPrefix(gd) else { pendingStatus = true; continue }
-            let rel = p.dropFirst(gd.count)
-            if rel.hasPrefix("/objects") || rel.hasPrefix("/logs") || rel.hasPrefix("/lfs") { continue }
-            // Index writes (e.g. an IDE running git status) only affect status.
-            if rel.hasPrefix("/index") || rel == "/" || rel.isEmpty {
-                pendingStatus = true
-                continue
+        let gd = gitDir.path + "/", cd = commonDir.path + "/"
+        for raw in paths {
+            // FSEvents reports real paths (/private/var/…); ours may lack /private.
+            let p = raw.hasPrefix("/private/") && !gd.hasPrefix("/private/") ? String(raw.dropFirst(8)) : raw
+            let change: GitDirChange
+            if p.hasPrefix(gd) || p == gitDir.path {
+                change = Repository.classify(p.dropFirst(min(p.count, gd.count - 1)), own: true)
+            } else if isLinkedWorktree && (p.hasPrefix(cd) || p == commonDir.path) {
+                change = Repository.classify(p.dropFirst(min(p.count, cd.count - 1)), own: false)
+            } else if otherWorktreeRoots.contains(where: { p.hasPrefix($0) }) {
+                change = .ignore   // files of a worktree nested inside this one
+            } else {
+                change = .status
             }
-            pendingRefs = true
-            pendingStatus = true
+            switch change {
+            case .ignore: break
+            case .status: pendingStatus = true
+            case .refs: pendingRefs = true; pendingStatus = true
+            }
         }
         guard pendingRefs || pendingStatus else { return }
         refreshTask?.cancel()
@@ -795,13 +873,14 @@ final class Repository {
     func fetchInBackground(minInterval: TimeInterval = Settings.focusFetchInterval) {
         guard !remotes.isEmpty, backgroundFetchTask == nil, !isBusy, opState == .none,
               Date().timeIntervalSince(lastBackgroundFetch) >= minInterval else { return }
-        lastBackgroundFetch = Date()
-        backgroundFetchTask = Task {
+        let key = commonDir.path
+        let task = Task {
             let r = await git.run(["fetch", "--all", "--prune", "--quiet"])
             lastBackgroundFetchError = r.ok ? nil : r.errorMessage
-            backgroundFetchTask = nil
+            Repository.sharedFetches[key]?.task = nil
             await refreshRefs()
         }
+        Repository.sharedFetches[key] = (Date(), task)
     }
 
     var isFetchingInBackground: Bool { backgroundFetchTask != nil }
