@@ -395,6 +395,20 @@ struct CoreTests {
         #expect(!draft.title.isEmpty)
     }
 
+    @Test func releaseTitles() {
+        #expect(CommitStyle.releaseTitle(head: "main", base: "production") == "Main -> Production")
+        #expect(CommitStyle.releaseTitle(head: "master", base: "production") == "Master -> Production")
+        #expect(CommitStyle.releaseTitle(head: "feature/x", base: "production") == nil)
+        #expect(CommitStyle.releaseTitle(head: "main", base: "staging") == nil)
+        #expect(CommitStyle.applyRelease(head: "main", base: "production", to: "feat: CSV export and fixes")
+                == "Main -> Production: feat: CSV export and fixes")
+        #expect(CommitStyle.applyRelease(head: "main", base: "production", to: "main -> production: CSV export")
+                == "Main -> Production: CSV export")
+        #expect(CommitStyle.applyRelease(head: "dev", base: "production", to: "x") == "x")
+        let input = ClaudeCLI.input(head: "master", base: "production", commits: [], diffStat: "", template: nil)
+        #expect(input.contains("start the title with \"Master -> Production: \""))
+    }
+
     @Test func conventionalCommitPrefixes() {
         #expect(CommitStyle.prefix(of: "feat(ui): add button") == .init(type: "feat", scope: "ui", breaking: false))
         #expect(CommitStyle.prefix(of: "fix!: drop v1") == .init(type: "fix", scope: nil, breaking: true))

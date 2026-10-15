@@ -125,6 +125,7 @@ extension UITests {
         Prompt.headlessAnswers = [0]
         wc.confirmRemoveWorktree(wt)
         await UI.wait("removed", timeout: 15) { wc.repository.worktrees.count == 1 }
+        await UI.wait("its tab closed") { app.controllers.count == 1 }
         #expect(app.controllers.count == 1, "the worktree's own tab is closed")
         #expect(!FileManager.default.fileExists(atPath: linked.path))
         #expect(Prompt.headlessLog.first?.contains("No uncommitted changes") == true, "\(Prompt.headlessLog)")

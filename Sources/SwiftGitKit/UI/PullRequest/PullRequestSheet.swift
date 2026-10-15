@@ -305,6 +305,10 @@ final class PullRequestSheet: NSWindowController, NSTableViewDataSource, NSTable
             var title = found?.commits.first?.subject ?? ""
             let body = found?.commits.first?.body ?? ""
             if title.isEmpty { title = await repository.lastCommitSubject(of: head) }
+            // A release (main/master into production) is titled "Main -> Production".
+            if let base = basePopup.titleOfSelectedItem, let release = CommitStyle.releaseTitle(head: head, base: base) {
+                title = release
+            }
             await updatePushState(head: head)
             guard !Task.isCancelled else { return }
             // An existing pull request's own title and description take precedence.

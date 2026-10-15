@@ -344,6 +344,22 @@ enum CommitStyle {
         return Prefix(type: type, scope: group(2), breaking: group(3) != nil)
     }
 
+    /// "Main -> Production" / "Master -> Production" for a release pull request
+    /// (main or master into production); nil for any other pair.
+    static func releaseTitle(head: String, base: String) -> String? {
+        let h = head.lowercased()
+        guard (h == "main" || h == "master"), base.lowercased() == "production" else { return nil }
+        return h.prefix(1).uppercased() + h.dropFirst() + " -> Production"
+    }
+
+    /// Makes a release pull request's title start with "Main -> Production".
+    static func applyRelease(head: String, base: String, to title: String) -> String {
+        guard let release = releaseTitle(head: head, base: base) else { return title }
+        let t = title.trimmingCharacters(in: .whitespaces)
+        if t.lowercased().hasPrefix(release.lowercased()) { return release + t.dropFirst(release.count) }
+        return t.isEmpty ? release : release + ": " + t
+    }
+
     /// Most significant first; anything else ranks after these.
     static let typeOrder = ["feat", "fix", "perf", "refactor", "revert", "build", "ci", "docs", "style", "test", "chore"]
 

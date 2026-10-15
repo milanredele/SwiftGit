@@ -43,7 +43,9 @@ enum ClaudeCLI {
     /// The text sent on stdin: branch, commits (oldest first), changed files and template.
     static func input(head: String, base: String, commits: [BranchCommit], diffStat: String, template: String?) -> String {
         var s = "Branch \(head) into \(base).\n"
-        if let p = CommitStyle.pullRequestPrefix(commits.map(\.subject)) {
+        if let release = CommitStyle.releaseTitle(head: head, base: base) {
+            s += "This is a release to production; start the title with \"\(release): \" followed by a short summary of what is released (no Conventional Commits prefix).\n"
+        } else if let p = CommitStyle.pullRequestPrefix(commits.map(\.subject)) {
             s += "The commits use Conventional Commits prefixes; start the title with \"\(p.text) \".\n"
         }
         s += "\nCommits, oldest first:\n"
@@ -140,7 +142,11 @@ enum ClaudeCLI {
         guard var draft = parse(r.output) else {
             throw GitHubError(message: "claude returned no usable text.")
         }
-        draft.title = CommitStyle.apply(CommitStyle.pullRequestPrefix(commits.map(\.subject)), to: draft.title)
+        if CommitStyle.releaseTitle(head: head, base: base) != nil {
+            draft.title = CommitStyle.applyRelease(head: head, base: base, to: draft.title)
+        } else {
+            draft.title = CommitStyle.apply(CommitStyle.pullRequestPrefix(commits.map(\.subject)), to: draft.title)
+        }
         return draft
     }
 }
