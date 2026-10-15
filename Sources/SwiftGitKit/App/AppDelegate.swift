@@ -105,10 +105,8 @@ public final class AppDelegate: NSObject, NSApplicationDelegate, RepositoryTabHo
             await openBare(bare.commonDir)
             return
         } catch {
-            let alert = NSAlert()
-            alert.messageText = "Can’t open repository"
-            alert.informativeText = error.localizedDescription
-            alert.runModal()
+            // Through Prompt: never blocks in headless test runs.
+            await Prompt.error(nil, title: "Can’t open repository", message: error.localizedDescription)
             return
         }
         if let existing = controllers.first(where: { samePath($0.repository.root.path, repo.root.path) }) {

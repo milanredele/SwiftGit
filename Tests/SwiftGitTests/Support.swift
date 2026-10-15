@@ -6,8 +6,27 @@ import Testing
 /// Test-run safety net: unbuffered output (so a log shows where a run stopped)
 /// and a watchdog that ends a hung run instead of blocking the dev loop.
 enum Watchdog {
-    static let limit: UInt32 = 150
+    /// Ends the run when no test has made progress for this long (a hang), or
+    /// after `totalLimit` in any case. Progress-based, because CI machines run
+    /// the suite several times slower than a developer Mac.
+    static let idleLimit: TimeInterval = 120
+    static let totalLimit: TimeInterval = 900
+    nonisolated(unsafe) private static var lastBeat = Date()
+    private static let lock = NSLock()
+
+    /// Called by fixtures and waits: the run is still moving.
+    static func beat() {
+        lock.lock(); lastBeat = Date(); lock.unlock()
+    }
+
+    private static var idle: TimeInterval {
+        lock.lock(); defer { lock.unlock() }
+        return Date().timeIntervalSince(lastBeat)
+    }
+
     static let start: Void = {
+        beat()
+        let started = Date()
         setvbuf(stdout, nil, _IONBF, 0)
         // On a Swift runtime trap, print the stack of the crashing thread (debug aid).
         for sig in [SIGTRAP, SIGSEGV, SIGBUS] {
@@ -18,13 +37,13 @@ enum Watchdog {
             }
         }
         Thread.detachNewThread {
-            sleep(limit)
-            let msg = "WATCHDOG: test run still going after \(limit) s, exiting (see the last 'started' lines above).\n"
+            while idle < idleLimit && Date().timeIntervalSince(started) < totalLimit { sleep(5) }
+            let msg = "WATCHDOG: no test progress for \(Int(idle)) s (run time \(Int(Date().timeIntervalSince(started))) s), exiting (see the last 'started' lines above).\n"
             fputs(msg, stdout)
             fputs(msg, stderr)
             // Record every thread's stack (macOS `sample`) to see what is stuck.
             let out = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
-                .deletingLastPathComponent().appendingPathComponent(".dev/hang-sample.txt")
+                .deletingLastPathComponent().appendingPathComponent(".dev/snapshots/hang-sample.txt")   // uploaded with the CI snapshots
             let p = Process()
             p.executableURL = URL(fileURLWithPath: "/usr/bin/sample")
             p.arguments = [String(getpid()), "2", "-file", out.path]
@@ -41,6 +60,7 @@ enum Watchdog {
 enum Fixture {
     @discardableResult
     static func git(_ args: [String], in dir: URL, input: String? = nil, env extra: [String: String] = [:]) throws -> String {
+        Watchdog.beat()
         let p = Process()
         p.executableURL = URL(fileURLWithPath: "/usr/bin/git")
         p.arguments = ["-c", "user.name=Test User", "-c", "user.email=test@example.com",
@@ -152,6 +172,7 @@ enum UI {
     /// Waits (servicing the main actor) until `condition` holds.
     static func wait(_ what: String, timeout: TimeInterval = 10, _ condition: () -> Bool) async {
         let start = Date()
+        Watchdog.beat()
         while !condition() {
             if Date().timeIntervalSince(start) > timeout {
                 Issue.record("Timed out waiting for \(what)")
@@ -162,6 +183,7 @@ enum UI {
     }
 
     static func settle(_ window: NSWindow) async {
+        Watchdog.beat()
         for _ in 0..<3 {
             window.contentView?.layoutSubtreeIfNeeded()
             try? await Task.sleep(nanoseconds: 50_000_000)
