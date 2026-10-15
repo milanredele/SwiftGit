@@ -267,18 +267,54 @@ final class Repository {
         await refreshRefs()
     }
 
+    /// Reloads the working tree status; like refreshRefs, waits for a newer
+    /// refresh that overtakes it.
     func refreshStatus() async {
         statusGeneration += 1
         let gen = statusGeneration
+        statusInFlight += 1
         let r = await git.run(["status", "--porcelain=v2", "-z", "--branch"])
-        guard gen == statusGeneration, r.ok else { return }
-        status = WorkingStatus.parse(r.stdout)
-        headHash = status.headOID.flatMap { Hash20($0) }
-        opState = detectOperationState()
-        notify(.status)
+        if gen == statusGeneration, r.ok {
+            status = WorkingStatus.parse(r.stdout)
+            headHash = status.headOID.flatMap { Hash20($0) }
+            opState = detectOperationState()
+            notify(.status)
+        }
+        statusInFlight -= 1
+        if statusInFlight == 0 {
+            let waiters = statusWaiters
+            statusWaiters = []
+            for w in waiters { w.resume() }
+        } else if gen != statusGeneration {
+            await withCheckedContinuation { statusWaiters.append($0) }
+        }
     }
 
+    private var statusInFlight = 0
+    private var statusWaiters: [CheckedContinuation<Void, Never>] = []
+
+    /// Reloads branches, tags, stashes, remotes and worktrees. When a newer
+    /// refresh overtakes this one, waits for it, so callers always see state
+    /// at least as new as the moment they called.
     func refreshRefs() async {
+        refsInFlight += 1
+        let gen = await loadRefs()
+        refsInFlight -= 1
+        if refsInFlight == 0 {
+            let waiters = refsWaiters
+            refsWaiters = []
+            for w in waiters { w.resume() }
+        } else if gen != refsGeneration {
+            await withCheckedContinuation { refsWaiters.append($0) }
+        }
+    }
+
+    private var refsInFlight = 0
+    private var refsWaiters: [CheckedContinuation<Void, Never>] = []
+
+    /// One refresh; returns its generation (stops early when overtaken).
+    @discardableResult
+    private func loadRefs() async -> Int {
         refsGeneration += 1
         let gen = refsGeneration
         async let refsResult = git.run(["for-each-ref", "--format=" + RefInfo.format, "refs/heads", "refs/remotes", "refs/tags"])
@@ -286,7 +322,7 @@ final class Repository {
         async let remoteResult = git.run(["remote", "-v"])
         async let worktreeResult = WorktreeInfo.list(in: root)
         let (r1, r2, r3, r4) = await (refsResult, stashResult, remoteResult, worktreeResult)
-        guard gen == refsGeneration else { return }
+        guard gen == refsGeneration else { return gen }
         var newRefs = r1.ok ? RefInfo.parse(r1.output) : []
         stashes = r2.ok ? StashInfo.parse(r2.output) : []
         remotes = r3.ok ? RemoteInfo.parse(r3.output) : []
@@ -319,7 +355,7 @@ final class Repository {
         mainBranch = base
         if let base, let baseRef = newRefs.first(where: { $0.name == base && $0.kind != .tag }) {
             let merged = await git.run(["for-each-ref", "--merged=\(base)", "--format=%(refname)", "refs/heads"])
-            guard gen == refsGeneration else { return }
+            guard gen == refsGeneration else { return gen }
             let mergedNames = Set(merged.output.split(separator: "\n").map(String.init))
             let baseLocal = baseRef.kind == .remote ? baseRef.remoteBranch : baseRef.name
             mergeBaseInfo = (base, baseRef.target, baseLocal)
@@ -356,6 +392,7 @@ final class Repository {
             refsSignature = signature
             await reloadGraph()
         }
+        return gen
     }
 
     /// Checks (lazily) whether these branches were squash- or rebase-merged.
